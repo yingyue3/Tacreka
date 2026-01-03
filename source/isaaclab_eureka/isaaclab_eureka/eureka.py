@@ -34,7 +34,11 @@ class Eureka:
         feedback_subsampling: int = 10,
         temperature: float = 1.0,
         gpt_model: str = "gpt-4",
-        num_parallel_runs: int = 1,
+        num_parallel_runs: int = 2,
+        use_wandb: bool = True,
+        wandb_project: str = "isaaclab-eureka",
+        wandb_entity: str = None,
+        wandb_name: str = None,
     ):
         """Initialize the Eureka class.
 
@@ -49,6 +53,10 @@ class Eureka:
             temperature: The temperature to use for the GPT model.
             gpt_model: The GPT model to use.
             num_parallel_runs: The number of runs to execute in parallel.
+            use_wandb: Whether to use Weights & Biases for logging.
+            wandb_project: The wandb project name.
+            wandb_entity: The wandb entity/team name.
+            wandb_name: The wandb run name. If None, uses timestamp.
         """
 
         # Load the task description and success metric
@@ -94,6 +102,44 @@ class Eureka:
         from torch.utils.tensorboard import SummaryWriter as TensorboardSummaryWriter
 
         self._tensorboard_writer = TensorboardSummaryWriter(log_dir=self._log_dir, flush_secs=10)
+        
+        # Initialize wandb if requested
+        self._use_wandb = use_wandb
+        self._wandb = None
+        if use_wandb:
+            try:
+                import wandb
+                self._wandb = wandb
+                
+                # Determine run name
+                run_name = wandb_name if wandb_name else f"{task}_{timestamp}"
+                
+                # Initialize wandb
+                wandb.init(
+                    project=wandb_project,
+                    entity=wandb_entity,
+                    name=run_name,
+                    config={
+                        "task": task,
+                        "device": device,
+                        "env_seed": env_seed,
+                        "rl_library": rl_library,
+                        "max_training_iterations": max_training_iterations,
+                        "feedback_subsampling": feedback_subsampling,
+                        "temperature": temperature,
+                        "gpt_model": gpt_model,
+                        "num_parallel_runs": num_parallel_runs,
+                        "task_description": task_description,
+                        "success_metric_to_win": self._success_metric_to_win,
+                        "success_metric_tolerance": self._success_metric_tolerance,
+                    },
+                    dir=self._log_dir,
+                )
+                print(f"[INFO]: Weights & Biases logging initialized. Project: {wandb_project}, Run: {run_name}")
+            except ImportError:
+                print("[WARNING]: wandb not installed. Install with 'pip install wandb' to enable wandb logging.")
+                self._use_wandb = False
+                self._wandb = None
 
     def run(self, max_eureka_iterations: int):
         """Run the Eureka training loop.
@@ -124,8 +170,13 @@ class Eureka:
             # Log the llm outputs
             for idx, gpt_reward_method_string in enumerate(gpt_reward_method_strings):
                 self._tensorboard_writer.add_text(f"Run_{idx}/raw_llm_output", llm_outputs["raw_outputs"][idx], iter)
+                if self._use_wandb and self._wandb:
+                    self._wandb.log({f"Run_{idx}/raw_llm_output": llm_outputs["raw_outputs"][idx]}, step=iter)
             # Train the RL agent
             results = self._task_manager.train(gpt_reward_method_strings)
+            # Give TensorBoard time to flush logs before reading them
+            import time
+            time.sleep(1.0)  # Wait 1 second for TensorBoard to flush
             # Evaluate the results
             iter_best_success_metric = None
             best_run_idx = 0
@@ -149,7 +200,12 @@ class Eureka:
                     results[idx]["eureka_task_feedback"] = eureka_task_feedback
                     results[idx]["success_metric_max"] = success_metric_max
                     results[idx]["rewards_correlation"] = rewards_correlation
-
+                    # Log metrics to wandb
+                    if self._use_wandb and self._wandb:
+                        self._wandb.log({
+                            f"Run_{idx}/best_success_metric": success_metric_max if success_metric_max is not None else 0.0,
+                            f"Run_{idx}/rewards_correlation": rewards_correlation,
+                        }, step=iter)
                     # Check the best performing metric, determined by the minimum distance from the win target
                     if success_metric_max is not None and (
                         iter_best_success_metric is None
@@ -168,6 +224,13 @@ class Eureka:
                             best_run_results["success_metric"] = iter_best_success_metric
                             best_run_results["gpt_reward_method"] = gpt_reward_method_strings[idx]
                             best_run_results["task_feedback"] = eureka_task_feedback
+                            # Log best metric to wandb
+                            if self._use_wandb and self._wandb:
+                                self._wandb.log({
+                                    "best/overall_success_metric": iter_best_success_metric,
+                                    "best/iteration": iter,
+                                    "best/run_idx": idx,
+                                }, step=iter)
 
                 # Add the prompts
                 results[idx]["user_prompt"] = user_feedback_prompt
@@ -203,16 +266,32 @@ class Eureka:
         import numpy as np
 
         data = load_tensorboard_logs(log_dir)
+
         # Compute correlation between the oracle and GPT rewards
-        eureka_rewards = np.array(
-            next((data[key] for key in data if key.endswith("Eureka/eureka_total_rewards")), None)
-        )
-        oracle_rewards = np.array(
-            next((data[key] for key in data if key.endswith("Eureka/oracle_total_rewards")), None)
-        )
-        # Sometimes, the tensorboard logging is not complete, we take the minimum length between the two buffers
-        min_length = min(eureka_rewards.shape[0], oracle_rewards.shape[0])
-        rewards_correlation = np.corrcoef(eureka_rewards[:min_length], oracle_rewards[:min_length])[0, 1]
+        eureka_rewards_data = next((data[key] for key in data if key.endswith("Eureka/eureka_total_rewards")), None)
+        oracle_rewards_data = next((data[key] for key in data if key.endswith("Eureka/oracle_total_rewards")), None)
+        
+        # Handle case where rewards data is missing
+        if eureka_rewards_data is None or oracle_rewards_data is None:
+            print(f"[WARNING] Missing reward data in TensorBoard logs. Available keys: {list(data.keys())}")
+            print(f"[WARNING] Eureka rewards found: {eureka_rewards_data is not None}, Oracle rewards found: {oracle_rewards_data is not None}")
+            # Return default correlation of 0.0 if data is missing
+            rewards_correlation = 0.0
+        else:
+            eureka_rewards = np.array(eureka_rewards_data)
+            oracle_rewards = np.array(oracle_rewards_data)
+            
+            # Check if arrays have valid shape
+            if eureka_rewards.ndim == 0 or oracle_rewards.ndim == 0:
+                print(f"[WARNING] Reward arrays have invalid shape. Eureka: {eureka_rewards.shape}, Oracle: {oracle_rewards.shape}")
+                rewards_correlation = 0.0
+            elif len(eureka_rewards) == 0 or len(oracle_rewards) == 0:
+                print(f"[WARNING] Reward arrays are empty. Eureka: {len(eureka_rewards)}, Oracle: {len(oracle_rewards)}")
+                rewards_correlation = 0.0
+            else:
+                # Sometimes, the tensorboard logging is not complete, we take the minimum length between the two buffers
+                min_length = min(len(eureka_rewards), len(oracle_rewards))
+                rewards_correlation = np.corrcoef(eureka_rewards[:min_length], oracle_rewards[:min_length])[0, 1]
 
         success_metric_max = None
         # Make a summary of each plot in the tensorboard logs
@@ -262,11 +341,26 @@ class Eureka:
                 if result["success"]:
                     f.write(f"Training successful with the following metrics:\n{result['eureka_task_feedback']}\n")
                     f.write(f"Reward correlation with oracle rewards:\n{result['rewards_correlation']}\n")
-                    self._tensorboard_writer.add_scalar(f"Run_{idx}/success_metric", result["success_metric_max"], iter)
+                    # Log success_metric, using 0.0 if it's None (e.g., if metric wasn't found in logs)
+                    success_metric_value = result.get("success_metric_max")
+                    if success_metric_value is None:
+                        success_metric_value = 0.0
+                    self._tensorboard_writer.add_scalar(f"Run_{idx}/success_metric", success_metric_value, iter)
+                    # Log to wandb
+                    if self._use_wandb and self._wandb:
+                        self._wandb.log({
+                            f"Run_{idx}/success_metric": success_metric_value,
+                            f"Run_{idx}/rewards_correlation": result.get("rewards_correlation", 0.0),
+                        }, step=iter)
                 else:
                     f.write(f"Training failed with the following exception:\n{result['exception']}\n")
                     self._tensorboard_writer.add_scalar(f"Run_{idx}/success_metric", 0.0, iter)
+                    # Log to wandb
+                    if self._use_wandb and self._wandb:
+                        self._wandb.log({f"Run_{idx}/success_metric": 0.0}, step=iter)
                 self._tensorboard_writer.add_text(f"Run_{idx}/run_feedback", result["user_prompt"], iter)
+                if self._use_wandb and self._wandb:
+                    self._wandb.log({f"Run_{idx}/run_feedback": result["user_prompt"]}, step=iter)
                 f.write("\n")
 
     def _log_final_results(self, best_run_results: dict):
@@ -276,10 +370,25 @@ class Eureka:
             output += f"- Success metric: {best_run_results['success_metric']}\n"
             output += f"- GPT reward method: {best_run_results['gpt_reward_method']}\n"
             output += f"- Task metrics:\n{best_run_results['task_feedback']}\n"
+            
+            # Log final results to wandb
+            if self._use_wandb and self._wandb:
+                self._wandb.log({
+                    "final/best_success_metric": best_run_results["success_metric"],
+                    "final/gpt_reward_method": best_run_results["gpt_reward_method"],
+                    "final/task_feedback": best_run_results["task_feedback"],
+                })
         else:
             output += "- No successful training run\n"
+            # Log to wandb
+            if self._use_wandb and self._wandb:
+                self._wandb.log({"final/best_success_metric": None})
 
         print("Final results:\n", output)
 
         with open(f"{self._log_dir}/eureka_final_result.txt", "w") as f:
             f.write(output)
+        
+        # Finish wandb run
+        if self._use_wandb and self._wandb:
+            self._wandb.finish()

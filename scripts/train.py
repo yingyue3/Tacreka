@@ -21,6 +21,10 @@ def main(args_cli):
         feedback_subsampling=args_cli.feedback_subsampling,
         temperature=args_cli.temperature,
         gpt_model=args_cli.gpt_model,
+        use_wandb=args_cli.use_wandb,
+        wandb_project=args_cli.wandb_project,
+        wandb_entity=args_cli.wandb_entity,
+        wandb_name=args_cli.wandb_name,
     )
 
     eureka.run(max_eureka_iterations=args_cli.max_eureka_iterations)
@@ -30,7 +34,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train an RL agent with Eureka.")
     parser.add_argument("--task", type=str, default="Isaac-Cartpole-Direct-v0", help="Name of the task.")
     parser.add_argument(
-        "--num_parallel_runs", type=int, default=1, help="Number of Eureka runs to execute in parallel."
+        "--num_parallel_runs", type=int, default=2, help="Number of Eureka runs to execute in parallel."
     )
     parser.add_argument("--device", type=str, default="cuda", help="The device to run training on.")
     parser.add_argument("--env_seed", type=int, default=42, help="The random seed to use for the environment.")
@@ -60,6 +64,30 @@ if __name__ == "__main__":
         default="rsl_rl",
         choices=["rsl_rl", "rl_games"],
         help="The RL training library to use.",
+    )
+    parser.add_argument(
+        "--use_wandb",
+        action="store_true",
+        default=True,
+        help="Enable Weights & Biases logging.",
+    )
+    parser.add_argument(
+        "--wandb_project",
+        type=str,
+        default="isaaclab-Isaac-Cartpole",
+        help="The wandb project name.",
+    )
+    parser.add_argument(
+        "--wandb_entity",
+        type=str,
+        default=None,
+        help="The wandb entity/team name. If None, uses default entity.",
+    )
+    parser.add_argument(
+        "--wandb_name",
+        type=str,
+        default=None,
+        help="The wandb run name. If None, uses timestamp-based name.",
     )
     args_cli = parser.parse_args()
 

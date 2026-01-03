@@ -93,4 +93,8 @@ class LLMManager:
 
         raw_outputs = [response.message.content for response in responses.choices]
         reward_strings = [self.extract_code_from_response(raw_output) for raw_output in raw_outputs]
+        print("+++++++test+++++++")
+        print("reward_strings length: ", len(reward_strings))
+        print("num_suggestions: ", self._num_suggestions)
+        print("+++++++test+++++++")
         return {"reward_strings": reward_strings, "raw_outputs": raw_outputs}
