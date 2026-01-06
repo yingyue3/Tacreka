@@ -51,6 +51,8 @@ def main(args_cli):
             crossover_prob=args_cli.revolve_crossover_prob,
             migration_prob=args_cli.revolve_migration_prob,
             temperature_final=args_cli.revolve_temperature_final,
+            use_human_feedback=args_cli.revolve_use_human_feedback,
+            human_feedback_dir=args_cli.revolve_hf_responses_dir,
             use_wandb=args_cli.use_wandb,
             wandb_project=args_cli.wandb_project,
             wandb_entity=args_cli.wandb_entity,
@@ -153,6 +155,17 @@ if __name__ == "__main__":
         type=float,
         default=1.0,
         help="Final temperature for sampling in the REvolve full baseline.",
+    )
+    parser.add_argument(
+        "--revolve_use_human_feedback",
+        action="store_true",
+        help="Use human feedback (pairwise responses) to set fitness scores for REvolve full baseline.",
+    )
+    parser.add_argument(
+        "--revolve_hf_responses_dir",
+        type=str,
+        default=None,
+        help="Directory containing human feedback response CSVs organized by generation (e.g., generation_0/responses_*.csv).",
     )
     parser.add_argument(
         "--use_wandb",

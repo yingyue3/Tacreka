@@ -7,7 +7,7 @@ import math
 import os
 import random
 from functools import partial
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from isaaclab_eureka import EUREKA_ROOT_DIR
 from isaaclab_eureka.config import (
@@ -17,6 +17,8 @@ from isaaclab_eureka.config import (
 )
 from isaaclab_eureka.managers import EurekaTaskManager, LLMManager
 from isaaclab_eureka.revolve_full.database import RevolveDatabase
+from isaaclab_eureka.revolve_full import prompts as revolve_prompts
+from isaaclab_eureka.revolve_full.human_feedback import compute_hf_scores
 from isaaclab_eureka.utils import load_tensorboard_logs
 
 
@@ -24,18 +26,51 @@ def _linear_decay(iteration: int, initial: float, final: float, num_iterations: 
     return initial - (initial - final) * iteration / max(num_iterations, 1)
 
 
-def _append_in_context_prompt(base_prompt: str, samples: List[tuple[str, float]]) -> str:
+def _append_in_context_prompt(
+    task_prompt: str, samples: List[Tuple[str, float]], operator: str, episodes: int
+) -> str:
+    """Augment the task prompt with mutation/crossover guidance and few-shot examples."""
+    if operator == "crossover":
+        template = revolve_prompts.CROSSOVER
+    else:
+        template = revolve_prompts.MUTATION
+
+    examples_lines: List[str] = []
     if not samples:
-        return base_prompt
-    context_lines = ["\nPrevious reward functions and scores:"]
-    for filename, fitness_score in samples:
-        try:
-            with open(filename, "r") as f:
-                fn_str = f.read()
-            context_lines.append(f"\nFitness: {fitness_score:.3f}\n```python\n{fn_str}\n```")
-        except FileNotFoundError:
-            continue
-    return base_prompt + "\n" + "\n".join(context_lines)
+        examples_lines.append("No prior examples available.")
+    else:
+        for filename, fitness_score in samples:
+            try:
+                with open(filename, "r") as f:
+                    fn_str = f.read()
+                examples_lines.append(f"\nscore={fitness_score:.3f}\n```python\n{fn_str}\n```")
+            except FileNotFoundError:
+                continue
+    examples_block = "\n".join(examples_lines)
+    template = template.replace("<EXAMPLES>", examples_block)
+    template = template.replace("<EPISODES>", str(episodes))
+    task_rules = (
+        "\nPlease keep the Isaac Lab reward signature `_get_rewards_eureka(self)` and return "
+        "a tuple of (total_reward, reward_dict) where reward_dict maps strings to tensors on the correct device."
+    )
+    return task_prompt + task_rules + "\n" + template
+
+
+def generate_valid_reward(llm_manager, user_prompt: str, max_trials: int = 3) -> Optional[str]:
+    """Loop until we get a reward string that looks usable."""
+    error_feedback = ""
+    trials = 0
+    while trials < max_trials:
+        llm_outputs = llm_manager.prompt(user_prompt=user_prompt + error_feedback)
+        reward_string = llm_outputs["reward_strings"][0]
+        if reward_string and "_get_rewards_eureka" in reward_string and "return" in reward_string:
+            return reward_string
+        error_feedback = (
+            "\nThe previous reward function was invalid (missing `_get_rewards_eureka` or `return`). "
+            "Please fix and regenerate a valid reward function."
+        )
+        trials += 1
+    return None
 
 
 class RevolveFull:
@@ -58,6 +93,8 @@ class RevolveFull:
         migration_prob: float = 0.3,
         few_shot: Optional[Dict[str, int]] = None,
         temperature_final: float = 1.0,
+        use_human_feedback: bool = False,
+        human_feedback_dir: Optional[str] = None,
         use_wandb: bool = True,
         wandb_project: str = "isaaclab-revolve-full",
         wandb_entity: str = None,
@@ -78,11 +115,16 @@ class RevolveFull:
         self._max_island_size = max_island_size
         self._crossover_prob = crossover_prob
         self._migration_prob = migration_prob
+        self._use_hf = use_human_feedback
+        self._hf_dir = human_feedback_dir
 
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self._log_dir = os.path.join(EUREKA_ROOT_DIR, "logs", "revolve_full", task, timestamp)
         self._db_dir = os.path.join(self._log_dir, "database")
         os.makedirs(self._db_dir, exist_ok=True)
+        if self._use_hf:
+            self._hf_dir = human_feedback_dir or os.path.join(self._log_dir, "human_feedback")
+            os.makedirs(self._hf_dir, exist_ok=True)
 
         self._llm_factory = partial(
             LLMManager,
@@ -167,21 +209,24 @@ class RevolveFull:
             island_ids: List[int] = []
             counter_ids: List[int] = []
             metrics_dicts: List[Dict] = []
+            candidate_ids: List[str] = []
 
             for counter_id in range(self._individuals_per_generation):
                 if generation_id == 0:
                     island_id = random.choice(range(database.num_islands))
-                    in_context_samples = []
+                    in_context_samples: List[Tuple[str, float]] = []
+                    operator = "mutation"
                 else:
-                    in_context_samples, island_id, _ = database.sample_in_context(
+                    in_context_samples, island_id, operator = database.sample_in_context(
                         self._few_shot, temperature
                     )
                 island_ids.append(island_id)
-                prompt_with_context = _append_in_context_prompt(base_user_prompt, in_context_samples)
+                prompt_with_context = _append_in_context_prompt(
+                    base_user_prompt, in_context_samples, operator, episodes=100
+                )
 
                 llm_manager = self._llm_factory(temperature=temperature)
-                llm_outputs = llm_manager.prompt(user_prompt=prompt_with_context)
-                reward_string = llm_outputs["reward_strings"][0]
+                reward_string = generate_valid_reward(llm_manager, prompt_with_context)
                 if reward_string is None or reward_string.strip() == "":
                     print(f"[WARN] Empty reward string for generation {generation_id}, counter {counter_id}. Skipping.")
                     continue
@@ -203,11 +248,13 @@ class RevolveFull:
                     "fitness": fitness,
                     "rewards_correlation": correlation,
                     "success": result["success"],
+                    "operator": operator,
                 }
                 metrics_dicts.append(metrics_dict)
                 rew_fn_strings.append(reward_string)
                 fitness_scores.append(fitness)
                 counter_ids.append(counter_id)
+                candidate_ids.append(f"gen{generation_id}_ctr{counter_id}_isl{island_id}")
 
                 if best_overall["fitness"] is None or (
                     success_metric_max is not None
@@ -221,6 +268,26 @@ class RevolveFull:
             if len(rew_fn_strings) == 0:
                 print("[WARN] No valid reward functions generated; skipping generation update.")
                 continue
+
+            # Human feedback: write manifest and, if responses exist, override fitness scores with Elo ratings.
+            if self._use_hf:
+                manifest_path = os.path.join(self._hf_dir, f"generation_{generation_id}", "candidates_manifest.csv")
+                os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+                with open(manifest_path, "w") as mf:
+                    mf.write("candidate_id,generation,counter,island,log_dir\n")
+                    for cid, gen_id, ctr_id, isl_id in zip(
+                        candidate_ids,
+                        [generation_id] * len(counter_ids),
+                        counter_ids,
+                        island_ids,
+                    ):
+                        mf.write(f"{cid},{gen_id},{ctr_id},{isl_id},{self._log_dir}\n")
+                hf_scores = compute_hf_scores(self._hf_dir, generation_id)
+                if hf_scores:
+                    remapped_scores = []
+                    for cid, default_score in zip(candidate_ids, fitness_scores):
+                        remapped_scores.append(hf_scores.get(cid, default_score))
+                    fitness_scores = remapped_scores
 
             if generation_id > 0:
                 database.add_individuals_to_islands(
