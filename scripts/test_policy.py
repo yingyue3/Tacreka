@@ -213,25 +213,37 @@ def main(args_cli):
                             s[:, dones, :] = 0.0
 
     # Calculate final statistics
+    results = {
+        "completed_episodes": completed_episodes,
+        "successful_episodes": successful_episodes,
+        "episode_lengths": episode_lengths,
+        "success_rate": None,
+        "avg_episode_length": None,
+        "max_episode_length": max_episode_length,
+    }
+
     if completed_episodes > 0:
         success_rate = successful_episodes / completed_episodes
         avg_episode_length = sum(episode_lengths) / len(episode_lengths) if episode_lengths else 0
-        
-        print("\n" + "="*60)
+        results["success_rate"] = success_rate
+        results["avg_episode_length"] = avg_episode_length
+
+        print("\n" + "=" * 60)
         print("TEST RESULTS")
-        print("="*60)
+        print("=" * 60)
         print(f"Total episodes completed: {completed_episodes}")
         print(f"Successful episodes: {successful_episodes}")
         print(f"Success rate: {success_rate:.2%}")
         print(f"Average episode length: {avg_episode_length:.2f} / {max_episode_length}")
         print(f"Max episode length: {max(episode_lengths) if episode_lengths else 0}")
         print(f"Min episode length: {min(episode_lengths) if episode_lengths else 0}")
-        print("="*60)
+        print("=" * 60)
     else:
         print("No episodes completed during testing.")
 
     env.close()
     simulation_app.close()
+    return results
 
 
 if __name__ == "__main__":
@@ -258,4 +270,3 @@ if __name__ == "__main__":
 
     # Run the main function
     main(args_cli)
-
