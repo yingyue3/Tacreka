@@ -44,7 +44,7 @@ def get_freest_gpu():
 class MuteOutput:
     """Context manager to mute stdout and stderr."""
 
-    def __enter__(self):
+    def __enter__(self): 
         self._stdout = sys.stdout
         self._stderr = sys.stderr
         sys.stdout = open(os.devnull, "w")  # noqa: SIM115

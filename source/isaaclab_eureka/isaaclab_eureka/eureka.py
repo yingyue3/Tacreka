@@ -225,7 +225,6 @@ class Eureka:
                             best_run_results["success_metric"] = iter_best_success_metric
                             best_run_results["gpt_reward_method"] = gpt_reward_method_strings[idx]
                             best_run_results["task_feedback"] = eureka_task_feedback
-                            print("logging best metric to wandb")
                             # Log best metric to wandb
                             if self._use_wandb and self._wandb:
                                 self._wandb.log({
