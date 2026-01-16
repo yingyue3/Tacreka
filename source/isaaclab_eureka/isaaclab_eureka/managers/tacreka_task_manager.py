@@ -53,7 +53,7 @@ def _reset_idx(self, env_ids):
 """
 
 
-class EurekaTaskManager:
+class TacrekaTaskManager:
     """Manages the set-up and training of a task using LLM-generated reward functions.
 
     It takes an existing IsaacLab task and inserts the Eureka-generated reward function or configuration into it. The

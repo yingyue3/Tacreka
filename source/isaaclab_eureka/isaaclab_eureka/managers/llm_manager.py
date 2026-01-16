@@ -4,6 +4,7 @@
 
 import os
 import re
+import json
 
 import openai
 
@@ -58,6 +59,37 @@ class LLMManager:
             # Remove leading newline characters
             code_string = code_string.lstrip("\n")
         return code_string
+    
+    def extract_json_from_response(self, response: str):
+        feature_dic = json.loads(response)
+        features = feature_dic["features"]
+        return features
+
+    def feature_gen(self, user_prompt: str) -> list[str]:
+        """Call the LLM API to generate features
+
+        Args:
+            user_prompt: The user prompt to provide to the LLM API
+
+        Returns:
+            A dictionary containing the feature strings and raw outputs from the LLM
+        """
+        prompt = []
+        prompt.append({"role": "system", "content": user_prompt})
+        try:
+            responses = self._client.chat.completions.create(
+                model=self._gpt_model,
+                messages=prompt,
+                temperature=self._temperature,
+                n=self._num_suggestions,
+            )
+        except Exception as e:
+            raise RuntimeError("An error occurred while prompting the LLM") from e
+        
+        raw_outputs = [response.message.content for response in responses.choices]
+        feature_strings = [self.extract_json_from_response(raw_output) for raw_output in raw_outputs]
+
+        return {"feature_strings": feature_strings, "raw_outputs": raw_outputs}
 
     def prompt(self, user_prompt: str, assistant_prompt: str = None) -> list[str]:
         """Call the LLM API to collect responses
@@ -94,3 +126,40 @@ class LLMManager:
         raw_outputs = [response.message.content for response in responses.choices]
         reward_strings = [self.extract_code_from_response(raw_output) for raw_output in raw_outputs]
         return {"reward_strings": reward_strings, "raw_outputs": raw_outputs}
+
+    def single_feature_prompt(self, user_prompt: str, assistant_prompt: str = None) -> list[str]:
+        """Call the LLM API to collect responses
+
+        Args:
+            user_prompt: The user prompt to provide to the LLM API
+            assistant_prompt: The assistant prompt to provide to the LLM API
+
+        Returns:
+            A dictionary containing the reward strings and raw outputs from the LLM
+
+        Raises:
+            Exception: If there is an error with the LLM API
+        """
+        if assistant_prompt is not None:
+            self._prompts.append({"role": "assistant", "content": assistant_prompt})
+        self._prompts.append({"role": "user", "content": user_prompt})
+
+        # The official Eureka code only keeps the last round of feedback
+        if len(self._prompts) == 6:
+            self._prompts.pop(2)
+            self._prompts.pop(2)
+
+        try:
+            responses = self._client.chat.completions.create(
+                model=self._gpt_model,
+                messages=self._prompts,
+                temperature=self._temperature,
+                n=1,
+            )
+        except Exception as e:
+            raise RuntimeError("An error occurred while prompting the LLM") from e
+
+        raw_outputs = [response.message.content for response in responses.choices]
+        reward_strings = [self.extract_code_from_response(raw_output) for raw_output in raw_outputs]
+        return {"reward_strings": reward_strings[0], "raw_outputs": raw_outputs[0]}
+

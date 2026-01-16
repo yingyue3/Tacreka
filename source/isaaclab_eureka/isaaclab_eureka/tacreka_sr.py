@@ -4,6 +4,7 @@
 
 import datetime
 import os
+import json
 from typing import Literal
 
 # we import this here to avoid GLIBCXX_3.4.30 error in Isaac Sim 5.1
@@ -16,12 +17,14 @@ from isaaclab_eureka.config import (
     TASK_SUCCESS_POST_FEEDBACK_PROMPT,
     TASK_SUCCESS_PRE_FEEDBACK_PROMPT,
     TASKS_CFG,
+    FEATURE_AS_ONE_REWARD_PROMPT,
+    FEATURE_GEN_PROMPT,
 )
 from isaaclab_eureka.managers import EurekaTaskManager, LLMManager
 from isaaclab_eureka.utils import load_tensorboard_logs
 
 
-class Eureka:
+class Tacreka_SR:
     """Orchestrates the training of the RL agent using the LLM."""
 
     def __init__(
@@ -151,10 +154,10 @@ class Eureka:
         import numpy as np
 
         # Initial prompts
-        user_prompt = DIRECT_WORKFLOW_TASK_PROMPT.format(
+        feature_gen_prompt = FEATURE_GEN_PROMPT.format(
             task_description=self._task_description,
             success_metric_to_win=self._success_metric_to_win,
-            get_observations_method_as_string=self._task_manager.get_observations_method_as_string,
+            get_observations_method_as_string=self._task_manager.get_observations_method_as_string
         )
         # The assistant prompt is used to feed the previous LLM output back into the LLM
         assistant_prompt = None
@@ -165,13 +168,30 @@ class Eureka:
         for iter in range(max_eureka_iterations):
             print(f"\n{'#' * 20} Running Eureka Iteration {iter} {'#' * 20} \n")
             # Generate the GPT reward methods
-            llm_outputs = self._llm_manager.prompt(user_prompt=user_prompt, assistant_prompt=assistant_prompt)
-            gpt_reward_method_strings = llm_outputs["reward_strings"]
+            feature_gen_outputs = self._llm_manager.feature_gen(user_prompt=feature_gen_prompt)
+
+            feature_strings = feature_gen_outputs["feature_strings"]
+            print(f"\n{'+' * 10} Feature Generated {'+' * 10} \n")
+            gpt_reward_method_strings = []
+            llm_outputs = []
+            for feature_string in feature_strings:
+                reward_code = self._llm_manager.single_feature_prompt(user_prompt=FEATURE_AS_ONE_REWARD_PROMPT.format(
+                    task_description=self._task_description,
+                    success_metric_to_win=self._success_metric_to_win,
+                    get_observations_method_as_string=self._task_manager.get_observations_method_as_string,
+                    FEATURES_JSON=feature_string,
+                ))
+                gpt_reward_method_strings.append(reward_code["reward_strings"])
+                llm_outputs.append(reward_code)
+                print(feature_string)
+                print(reward_code["reward_strings"])
             # Log the llm outputs
             for idx, gpt_reward_method_string in enumerate(gpt_reward_method_strings):
-                self._tensorboard_writer.add_text(f"Run_{idx}/raw_llm_output", llm_outputs["raw_outputs"][idx], iter)
+                self._tensorboard_writer.add_text(f"Run_{idx}/raw_llm_output", llm_outputs[idx]["raw_outputs"], iter)
+                self._tensorboard_writer.add_text(f"Run_{idx}/raw_feature_string", json.dumps(feature_strings[iter][0]), iter)
                 if self._use_wandb and self._wandb:
-                    self._wandb.log({f"Run_{idx}/raw_llm_output": llm_outputs["raw_outputs"][idx]}, step=iter)
+                    self._wandb.log({f"Run_{idx}/raw_llm_output": gpt_reward_method_string}, step=iter)
+                    self._wandb.log({f"Run_{idx}/raw_feature_string": feature_strings[idx]}, step=iter)
             # Train the RL agent
             results = self._task_manager.train(gpt_reward_method_strings)
             # Give TensorBoard time to flush logs before reading them
@@ -181,7 +201,6 @@ class Eureka:
             iter_best_success_metric = None
             best_run_idx = 0
             for idx, result in enumerate(results):
-                print(f"\n{'+' * 20} Evaluating Eureka Result {idx} {'+' * 20} \n")
                 if not result["success"]:
                     user_feedback_prompt = TASK_FAILURE_FEEDBACK_PROMPT.format(traceback_msg=result["exception"])
                 else:
@@ -236,7 +255,7 @@ class Eureka:
 
                 # Add the prompts
                 results[idx]["user_prompt"] = user_feedback_prompt
-                results[idx]["assistant_prompt"] = llm_outputs["raw_outputs"][idx]
+                results[idx]["assistant_prompt"] = llm_outputs[idx]["raw_outputs"]
 
             self._log_iteration_results(iter, results)
 
