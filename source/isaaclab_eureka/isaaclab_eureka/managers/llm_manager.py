@@ -20,7 +20,7 @@ class LLMManager:
     - For the Azure OpenAI API, the environment variables AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY must be set.
     """
 
-    def __init__(self, gpt_model: str, num_suggestions: int, temperature: float, system_prompt: str):
+    def __init__(self, gpt_model: str, num_suggestions: int, temperature: float, system_prompt: str, feature_prompt: str = None):
         """Initialize the LLMManager
 
         Args:
@@ -34,6 +34,8 @@ class LLMManager:
         self._num_suggestions = num_suggestions
         self._temperature = temperature
         self._prompts = [{"role": "system", "content": system_prompt}]
+        self._feature_prompts = [{"role": "system", "content": feature_prompt}]
+        self._single_feature_reward_generation_prompts = []
 
         if "AZURE_OPENAI_API_KEY" in os.environ:
             self._client = openai.AzureOpenAI(api_version="2024-02-01")
@@ -65,7 +67,7 @@ class LLMManager:
         features = feature_dic["features"]
         return features
 
-    def feature_gen(self, user_prompt: str) -> list[str]:
+    def feature_gen(self, user_prompt: str, assistant_prompt: str = None) -> list[str]:
         """Call the LLM API to generate features
 
         Args:
@@ -74,12 +76,18 @@ class LLMManager:
         Returns:
             A dictionary containing the feature strings and raw outputs from the LLM
         """
-        prompt = []
-        prompt.append({"role": "system", "content": user_prompt})
+        if assistant_prompt is not None:
+            self._feature_prompts.append({"role": "assistant", "content": assistant_prompt})
+        self._feature_prompts.append({"role": "user", "content": user_prompt})
+
+        # The official Eureka code only keeps the last round of feedback
+        if len(self._feature_prompts) == 6:
+            self._feature_prompts.pop(2)
+            self._feature_prompts.pop(2)
         try:
             responses = self._client.chat.completions.create(
                 model=self._gpt_model,
-                messages=prompt,
+                messages=self._feature_prompts,
                 temperature=self._temperature,
                 n=self._num_suggestions,
             )
@@ -125,10 +133,6 @@ class LLMManager:
 
         raw_outputs = [response.message.content for response in responses.choices]
         reward_strings = [self.extract_code_from_response(raw_output) for raw_output in raw_outputs]
-        print("+++++++test+++++++")
-        print("reward_strings length: ", len(reward_strings))
-        print("num_suggestions: ", self._num_suggestions)
-        print("+++++++test+++++++")
         return {"reward_strings": reward_strings, "raw_outputs": raw_outputs}
 
     def single_feature_prompt(self, user_prompt: str, assistant_prompt: str = None) -> list[str]:
@@ -145,20 +149,20 @@ class LLMManager:
             Exception: If there is an error with the LLM API
         """
         if assistant_prompt is not None:
-            self._prompts.append({"role": "assistant", "content": assistant_prompt})
-        self._prompts.append({"role": "user", "content": user_prompt})
+            self._single_feature_reward_generation_prompts .append({"role": "assistant", "content": assistant_prompt})
+        self._single_feature_reward_generation_prompts.append({"role": "user", "content": user_prompt})
 
         # The official Eureka code only keeps the last round of feedback
-        if len(self._prompts) == 6:
-            self._prompts.pop(2)
-            self._prompts.pop(2)
+        if len(self._single_feature_reward_generation_prompts) == 6:
+            self._single_feature_reward_generation_prompts.pop(2)
+            self._single_feature_reward_generation_prompts.pop(2)
 
         try:
             responses = self._client.chat.completions.create(
                 model=self._gpt_model,
                 messages=self._prompts,
                 temperature=self._temperature,
-                n=1,
+                n=2,
             )
         except Exception as e:
             raise RuntimeError("An error occurred while prompting the LLM") from e
@@ -166,4 +170,8 @@ class LLMManager:
         raw_outputs = [response.message.content for response in responses.choices]
         reward_strings = [self.extract_code_from_response(raw_output) for raw_output in raw_outputs]
         return {"reward_strings": reward_strings[0], "raw_outputs": raw_outputs[0]}
+    
+    def single_feature_reset(self):
+        self._single_feature_reward_generation_prompts = []
+
 

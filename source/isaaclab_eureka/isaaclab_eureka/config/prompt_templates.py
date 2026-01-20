@@ -73,16 +73,8 @@ Here is how we get the observations from the environment:
 # {get_observations_method_as_string}
 # """
 
-FEATURE_GEN_PROMPT = """
-You are a reward-design assistant for reinforcement learning.
 
-Goal: Decompose the following RL task into a small set of interpretable “features” that capture what humans would consider good performance. These features will later be turned into reward terms and combined as a weighted sum.
-
-Task context:
-- Task description is: : {task_description}
-- The desired task score is: {success_metric_to_win}
-- Here is how we get the observations from the environment: {get_observations_method_as_string}
-
+FEATURE_GEN_FORMATTING_PROMPT = """
 Instructions:
 1) Propose 6 to 10 candidate features. Each feature must be:
    - Interpretable to a non-expert human (1 sentence description).
@@ -109,24 +101,24 @@ Instructions:
    - 2 to 3 alternative subsets emphasizing different human preferences (e.g., “smooth control”, “aggressive recovery”, “energy saving”)
 
 Output format: valid JSON only (no extra commentary).
-"""
+"""  
 
-DECOMPOSE_REWARD_PROMPT = """
-You are a reward engineer for reinforcement learning.
-Goal: Implement ONE reward component for ONE specific feature of an IsaacLab RL task. This reward will later be combined with other components in a weighted sum, so it must be well-scaled and interpretable.
-Generate Based on the following features: 
-<features/>
-   feature_name: {feature_name}
-   intent: {intent}
-   measurable_signals: {measurable_signals}
-   proxy_metric: {proxy_metric}
-   desired_direction: {desired_direction}
-   typical_failure_mode: {typical_failure_mode}
-</features>
-The task description is: {task_description}
-The desired task score is: {success_metric_to_win}
-Here is how we get the observations from the environment:
-{get_observations_method_as_string}
+FEATURE_GEN_FEEDBACK_PROMPT = """
+We trained a RL policy using the reward function generated from the provided reward feature decomposition and tracked the values of the individual components in the reward function as well as global policy metrics such as success rates and episode lengths after every {feedback_subsampling} epochs and the maximum, mean, minimum values encountered:
+""" + FEATURE_GEN_FORMATTING_PROMPT
+
+FEATURE_GEN_INITIAL_PROMPT = """
+You are a reward-design assistant for reinforcement learning.
+
+Goal: Decompose the following RL task into a small set of interpretable “features” that capture what humans would consider good performance. These features will later be turned into reward terms and combined as a weighted sum.
+""" + FEATURE_GEN_FORMATTING_PROMPT
+
+FEATURE_GEN_PROMPT = """
+Decompose the following RL task into a small set of interpretable “features” that capture what humans would consider good performance. These features will later be turned into reward terms and combined as a weighted sum.
+Task context:
+- Task description is: {task_description}
+- The desired task score is: {success_metric_to_win}
+- Here is how we get the observations from the environment: {get_observations_method_as_string}
 """
 
 FEATURE_AS_ONE_REWARD_PROMPT = """
@@ -162,6 +154,27 @@ Hard requirements:
 Output requirements:
 - Output ONLY a single Python code block.
 - The code must define exactly one function:
+"""
 
+FEATURE_GEN_FAILURE_FEEDBACK_PROMPT = """
+Executing the reward function code above has the following error: {traceback_msg}.
+Please fix the bug and provide a new, improved reward function!
+""" + FEATURE_AS_ONE_REWARD_PROMPT
 
+DECOMPOSE_REWARD_PROMPT = """
+You are a reward engineer for reinforcement learning.
+Goal: Implement ONE reward component for ONE specific feature of an IsaacLab RL task. This reward will later be combined with other components in a weighted sum, so it must be well-scaled and interpretable.
+Generate Based on the following features: 
+<features/>
+   feature_name: {feature_name}
+   intent: {intent}
+   measurable_signals: {measurable_signals}
+   proxy_metric: {proxy_metric}
+   desired_direction: {desired_direction}
+   typical_failure_mode: {typical_failure_mode}
+</features>
+The task description is: {task_description}
+The desired task score is: {success_metric_to_win}
+Here is how we get the observations from the environment:
+{get_observations_method_as_string}
 """

@@ -13,12 +13,13 @@ from isaaclab_eureka import EUREKA_ROOT_DIR
 from isaaclab_eureka.config import (
     DIRECT_WORKFLOW_INITIAL_PROMPT,
     DIRECT_WORKFLOW_TASK_PROMPT,
-    TASK_FAILURE_FEEDBACK_PROMPT,
-    TASK_SUCCESS_POST_FEEDBACK_PROMPT,
-    TASK_SUCCESS_PRE_FEEDBACK_PROMPT,
     TASKS_CFG,
-    FEATURE_AS_ONE_REWARD_PROMPT,
+    FEATURE_GEN_FORMATTING_PROMPT,
+    FEATURE_GEN_FEEDBACK_PROMPT,
+    FEATURE_GEN_INITIAL_PROMPT,
     FEATURE_GEN_PROMPT,
+    FEATURE_AS_ONE_REWARD_PROMPT,
+    FEATURE_GEN_FAILURE_FEEDBACK_PROMPT
 )
 from isaaclab_eureka.managers import EurekaTaskManager, LLMManager
 from isaaclab_eureka.utils import load_tensorboard_logs
@@ -82,7 +83,7 @@ class Tacreka_SR:
             gpt_model=gpt_model,
             num_suggestions=self._num_processes,
             temperature=temperature,
-            system_prompt=DIRECT_WORKFLOW_INITIAL_PROMPT,
+            system_prompt=FEATURE_GEN_INITIAL_PROMPT,
         )
 
         print("[INFO]: Setting up the Task Manager...")
@@ -168,21 +169,22 @@ class Tacreka_SR:
         for iter in range(max_eureka_iterations):
             print(f"\n{'#' * 20} Running Eureka Iteration {iter} {'#' * 20} \n")
             # Generate the GPT reward methods
-            feature_gen_outputs = self._llm_manager.feature_gen(user_prompt=feature_gen_prompt)
-
+            feature_gen_outputs = self._llm_manager.feature_gen(user_prompt=feature_gen_prompt, assistant_prompt=assistant_prompt)
             feature_strings = feature_gen_outputs["feature_strings"]
+            self._llm_manager.reset_feature_prompts()
             print(f"\n{'+' * 10} Feature Generated {'+' * 10} \n")
             gpt_reward_method_strings = []
             llm_outputs = []
             for feature_string in feature_strings:
+
                 reward_code = self._llm_manager.single_feature_prompt(user_prompt=FEATURE_AS_ONE_REWARD_PROMPT.format(
                     task_description=self._task_description,
                     success_metric_to_win=self._success_metric_to_win,
                     get_observations_method_as_string=self._task_manager.get_observations_method_as_string,
                     FEATURES_JSON=feature_string,
                 ))
-                gpt_reward_method_strings.append(reward_code["reward_strings"])
-                llm_outputs.append(reward_code)
+                gpt_reward_method_strings = reward_code["reward_strings"]
+                llm_outputs.append(reward_code["raw_outputs"])
                 print(feature_string)
                 print(reward_code["reward_strings"])
             # Log the llm outputs
