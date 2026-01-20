@@ -58,7 +58,7 @@ def main(args_cli):
         # reset environment
         obs = env.get_observations()
 
-        print("+++++++TESTING+++++++")
+        # print("+++++++TESTING+++++++")
         print("Simulation app is running: ", simulation_app.is_running())
         # simulate environment
         while simulation_app.is_running():
@@ -68,7 +68,7 @@ def main(args_cli):
                 actions = policy(obs)
                 # env stepping
                 obs, _, _, _ = env.step(actions)
-                print("+++++++TESTING+++++++")
+                # print("+++++++TESTING+++++++")
 
     elif args_cli.rl_library == "rl_games":
         from isaaclab_rl.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper

@@ -100,17 +100,17 @@ def main(args_cli):
         # reset environment
         obs = env.get_observations()
 
-        print("+++++++TESTING+++++++")
         print("Simulation app is running: ", simulation_app.is_running())
         step_count = 0
+        dones = False
         # simulate environment
-        while simulation_app.is_running():
+        while simulation_app.is_running() and step_count < args_cli.record_interval:
             # run everything in inference mode
             with torch.inference_mode():
                 # agent stepping
                 actions = policy(obs)
                 # env stepping
-                obs, _, _, _ = env.step(actions)
+                obs, a, b, c = env.step(actions)
                 step_count += 1
                 if step_count % 100 == 0:
                     print(f"Step: {step_count}")
@@ -182,7 +182,8 @@ def main(args_cli):
         #   attempt to have complete control over environment stepping. However, this removes other
         #   operations such as masking that is used for multi-agent learning by RL-Games.
         step_count = 0
-        while simulation_app.is_running():
+        done = False
+        while simulation_app.is_running() and step_count < args_cli.record_interval:
             # run everything in inference mode
             with torch.inference_mode():
                 # convert obs to agent format
@@ -242,13 +243,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--record_interval",
         type=int,
-        default=0,
+        default=510,
         help="Record video every N steps (0 = record every step).",
     )
     parser.add_argument(
         "--video_length",
         type=int,
-        default=200,
+        default=500,
         help="Number of steps to record per video.",
     )
     parser.add_argument(

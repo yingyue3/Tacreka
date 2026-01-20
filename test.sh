@@ -1,3 +1,5 @@
+# not  complete
+
 python scripts/test_policy.py \
     --checkpoint /path/to/checkpoint.pt \
     --task Isaac-Cartpole-Direct-v0 \
@@ -5,11 +7,12 @@ python scripts/test_policy.py \
     --rl_library rsl_rl \
     --headless
 
-python scripts/record_policy.py \
-    --checkpoint /path/to/checkpoint.pt \
+# Record the video of the policy
+
+./isaaclab.sh -p scripts/play_with_recording.py \
+    --checkpoint checkpoint.pt \
     --task Isaac-Cartpole-Direct-v0 \
-    --num_episodes 1 \
     --rl_library rsl_rl \
     --headless \
-    --output_dir ./recordings \
-    --output_filename policy_execution
+    --record_video \
+    --output_dir ./recordings
