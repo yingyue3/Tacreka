@@ -113,6 +113,17 @@ You are a reward-design assistant for reinforcement learning.
 Goal: Decompose the following RL task into a small set of interpretable “features” that capture what humans would consider good performance. These features will later be turned into reward terms and combined as a weighted sum.
 """ + FEATURE_GEN_FORMATTING_PROMPT
 
+FEATURE_GEN_POST_FEEDBACK_PROMPT = """
+Please carefully analyze the policy feedback and provide a new, improved reward component devision that can better solve the task. Some helpful tips for analyzing the policy feedback:
+    (1) If the success rates are always near zero, then you must rewrite the entire reward function
+    (2) If the values for a certain reward component are near identical throughout, then this means RL is not able to optimize this component as it is written. You may consider
+        (a) Changing its scale or the value of its temperature parameter
+        (b) Re-writing the reward component
+        (c) Discarding the reward component
+    (3) If some reward components' magnitude is significantly larger, then you must re-scale its value to a proper range
+Please analyze each existing reward component in the suggested manner above first, and then write the reward function code.
+""" + FEATURE_GEN_FORMATTING_PROMPT
+
 FEATURE_GEN_PROMPT = """
 Decompose the following RL task into a small set of interpretable “features” that capture what humans would consider good performance. These features will later be turned into reward terms and combined as a weighted sum.
 Task context:

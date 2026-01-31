@@ -135,7 +135,7 @@ class LLMManager:
         reward_strings = [self.extract_code_from_response(raw_output) for raw_output in raw_outputs]
         return {"reward_strings": reward_strings, "raw_outputs": raw_outputs}
 
-    def single_feature_prompt(self, user_prompt: str, assistant_prompt: str = None) -> list[str]:
+    def single_feature_prompt(self, user_prompt: str, assistant_prompt: str = None, num_suggestion: int = 1) -> list[str]:
         """Call the LLM API to collect responses
 
         Args:
@@ -162,14 +162,14 @@ class LLMManager:
                 model=self._gpt_model,
                 messages=self._prompts,
                 temperature=self._temperature,
-                n=2,
+                n=num_suggestion,
             )
         except Exception as e:
             raise RuntimeError("An error occurred while prompting the LLM") from e
 
         raw_outputs = [response.message.content for response in responses.choices]
         reward_strings = [self.extract_code_from_response(raw_output) for raw_output in raw_outputs]
-        return {"reward_strings": reward_strings[0], "raw_outputs": raw_outputs[0]}
+        return {"reward_strings": reward_strings, "raw_outputs": raw_outputs}
     
     def single_feature_reset(self):
         self._single_feature_reward_generation_prompts = []
