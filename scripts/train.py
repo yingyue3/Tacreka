@@ -11,7 +11,7 @@ from isaaclab_eureka.eureka_local import Eureka
 from isaaclab_eureka.tacreka_sr import Tacreka_SR
 
 def main(args_cli):
-    eureka = Eureka(
+    eureka = Tacreka_SR(
         task=args_cli.task,
         rl_library=args_cli.rl_library,
         num_parallel_runs=args_cli.num_parallel_runs,

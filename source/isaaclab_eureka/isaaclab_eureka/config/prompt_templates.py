@@ -162,6 +162,7 @@ Hard requirements:
    R = sum_i w_i * r_i
    Use default weights w_i = 1.0 unless you have a strong reason; if you change weights, explain why.
 
+
 Output requirements:
 - Output ONLY a single Python code block.
 - The code must define exactly one function:
@@ -170,7 +171,7 @@ Output requirements:
 FEATURE_GEN_FAILURE_FEEDBACK_PROMPT = """
 Executing the reward function code above has the following error: {traceback_msg}.
 Please fix the bug and provide a new, improved reward function!
-""" + FEATURE_AS_ONE_REWARD_PROMPT
+""" + FEATURE_GEN_FORMATTING_PROMPT
 
 DECOMPOSE_REWARD_PROMPT = """
 You are a reward engineer for reinforcement learning.
