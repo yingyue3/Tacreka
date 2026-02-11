@@ -19,8 +19,11 @@ from isaaclab_eureka.config import (
     FEATURE_GEN_INITIAL_PROMPT,
     FEATURE_GEN_PROMPT,
     FEATURE_AS_ONE_REWARD_PROMPT,
-    FEATURE_GEN_FAILURE_FEEDBACK_PROMPT,
-    FEATURE_GEN_POST_FEEDBACK_PROMPT
+    FEATURE_AS_ONE_REWARD_INITIAL_PROMPT,
+    FEATURE_GEN_POST_FEEDBACK_PROMPT,
+    FEATURE_AS_ONE_FAILURE_FEEDBACK_PROMPT,
+    FEATURE_AS_ONE_SUCCESS_POST_FEEDBACK_PROMPT,
+    TASK_SUCCESS_PRE_FEEDBACK_PROMPT
 )
 from isaaclab_eureka.managers import EurekaTaskManager, LLMManager
 from isaaclab_eureka.utils import load_tensorboard_logs
@@ -78,13 +81,14 @@ class Tacreka_SR:
         self._task_description = task_description
         self._feedback_subsampling = feedback_subsampling
         self._num_processes = num_parallel_runs
+        self._num_parallel_runs = 2
 
         print("[INFO]: Setting up the LLM Manager...")
         self._llm_manager = LLMManager(
             gpt_model=gpt_model,
             num_suggestions=self._num_processes,
             temperature=temperature,
-            system_prompt=DIRECT_WORKFLOW_INITIAL_PROMPT,
+            system_prompt=FEATURE_AS_ONE_REWARD_INITIAL_PROMPT,
             feature_prompt=FEATURE_GEN_INITIAL_PROMPT,
         )
 
@@ -94,7 +98,7 @@ class Tacreka_SR:
             device=device,
             env_seed=env_seed,
             rl_library=rl_library,
-            num_processes=self._num_processes,
+            num_processes=self._num_parallel_runs,
             max_training_iterations=max_training_iterations,
             success_metric_string=success_metric_string,
         )
@@ -146,7 +150,8 @@ class Tacreka_SR:
                 print("[WARNING]: wandb not installed. Install with 'pip install wandb' to enable wandb logging.")
                 self._use_wandb = False
                 self._wandb = None
-
+    
+    user_feedback_prompt_rw_gen = None
     def run(self, max_eureka_iterations: int):
         """Run the Eureka training loop.
 
@@ -160,10 +165,11 @@ class Tacreka_SR:
         feature_gen_prompt = FEATURE_GEN_PROMPT.format(
             task_description=self._task_description,
             success_metric_to_win=self._success_metric_to_win,
-            get_observations_method_as_string=self._task_manager.get_observations_method_as_string
+            get_observations_method_as_string=self._task_manager.get_observations_method_as_string,
         )
         # The assistant prompt is used to feed the previous LLM output back into the LLM
         assistant_prompt = None
+        rw_gen_assistant_prompt = None
 
         # The best run across all iterations
         best_run_results = {"success_metric": None}
@@ -171,9 +177,10 @@ class Tacreka_SR:
         for iter in range(max_eureka_iterations):
             print(f"\n{'#' * 20} Running Eureka Iteration {iter} {'#' * 20} \n")
             # Generate the GPT reward methods
-            feature_gen_outputs = self._llm_manager.feature_gen(user_prompt=feature_gen_prompt, assistant_prompt=assistant_prompt)
-            feature_strings = feature_gen_outputs["feature_strings"]
-            self._llm_manager.single_feature_reset()
+            if assistant_prompt != "N":
+                feature_gen_outputs = self._llm_manager.feature_gen(user_prompt=feature_gen_prompt, assistant_prompt=assistant_prompt)
+                feature_strings = feature_gen_outputs["feature_strings"]
+            # self._llm_manager.single_feature_reset()
             print(f"\n{'+' * 20} Feature Generated {'+' * 20} \n")
             llm_outputs = []
             gpt_reward_method_strings = []
@@ -184,8 +191,9 @@ class Tacreka_SR:
                     success_metric_to_win=self._success_metric_to_win,
                     get_observations_method_as_string=self._task_manager.get_observations_method_as_string,
                     FEATURES_JSON=feature_string,
-                    num_suggestion= 1 # only one suggestion is needed for the single feature prompt
-                ))
+                ), assistant_prompt=rw_gen_assistant_prompt, 
+                num_suggestion= self._num_parallel_runs, # only one suggestion is needed for the single feature prompt
+                )
                 llm_outputs.append(reward_code)
             # Log the llm outputs
             i = 0
@@ -210,9 +218,12 @@ class Tacreka_SR:
             best_run_idx = 0
             for idx, result in enumerate(results):
                 if not result["success"]:
-                    user_feedback_prompt = FEATURE_GEN_FAILURE_FEEDBACK_PROMPT.format(traceback_msg=result["exception"])
+                    user_feedback_prompt_rw_gen = FEATURE_AS_ONE_FAILURE_FEEDBACK_PROMPT.format(traceback_msg=result["exception"])
+                    user_feedback_prompt = "N"
+                    print("Failed to generate correct reward function, using previous feedback prompt")
                 else:
                     # Compute the performance metrics
+                    print("Successfully generated reward function, generating task feedback")
                     eureka_task_feedback, success_metric_max, rewards_correlation = self._get_eureka_task_feedback(
                         result["log_dir"], self._feedback_subsampling
                     )
@@ -224,11 +235,19 @@ class Tacreka_SR:
                         + FEATURE_GEN_POST_FEEDBACK_PROMPT
                     )
 
+                    # user_feedback_prompt_rw_gen = (
+                    #     TASK_SUCCESS_PRE_FEEDBACK_PROMPT.format(feedback_subsampling=self._feedback_subsampling)
+                    #     + eureka_task_feedback
+                    #     + FEATURE_AS_ONE_SUCCESS_POST_FEEDBACK_PROMPT
+                    # )
+                    user_feedback_prompt_rw_gen = None
+
                     # Store the results
                     results[idx]["eureka_task_feedback"] = eureka_task_feedback
                     results[idx]["success_metric_max"] = success_metric_max
                     results[idx]["rewards_correlation"] = rewards_correlation
-                    results[idx]["reward_components"] = [feature["feature_name"] for feature in feature_strings[idx % 2]]
+                    feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
+                    results[idx]["reward_components"] = feature_gen_outputs["raw_outputs"][feature_idx]
                     # Log metrics to wandb
                     if self._use_wandb and self._wandb:
                         self._wandb.log({
@@ -264,9 +283,11 @@ class Tacreka_SR:
                                 }, step=iter)
 
                 # Add the prompts
+                feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
                 results[idx]["user_prompt"] = user_feedback_prompt
-                results[idx]["assistant_prompt"] = gpt_reward_method_strings[idx]["raw_output"]
-                results[idx]["feature_idx"] = gpt_reward_method_strings[idx]["feature_idx"]
+                results[idx]["assistant_prompt_rw_gen"] = user_feedback_prompt_rw_gen
+                results[idx]["assistant_prompt"] = feature_gen_outputs["raw_outputs"][feature_idx]
+                results[idx]["feature_idx"] = feature_idx
 
             self._log_iteration_results(iter, results)
 
@@ -280,6 +301,7 @@ class Tacreka_SR:
 
             assistant_prompt = results[best_run_idx]["assistant_prompt"]
             feature_gen_prompt = results[best_run_idx]["user_prompt"]
+            rw_gen_assistant_prompt = results[best_run_idx]["assistant_prompt_rw_gen"]
 
         self._log_final_results(best_run_results)
         # Close the task manager

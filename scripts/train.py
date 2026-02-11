@@ -38,7 +38,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--device", type=str, default="cuda", help="The device to run training on.")
     parser.add_argument("--env_seed", type=int, default=42, help="The random seed to use for the environment.")
-    parser.add_argument("--max_eureka_iterations", type=int, default=10, help="The number of Eureka iterations to run.")
+    parser.add_argument("--max_eureka_iterations", type=int, default=5, help="The number of Eureka iterations to run.")
     parser.add_argument(
         "--max_training_iterations",
         type=int,
