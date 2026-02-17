@@ -16,12 +16,14 @@ from isaaclab_eureka.config import (
     TASK_SUCCESS_POST_FEEDBACK_PROMPT,
     TASK_SUCCESS_PRE_FEEDBACK_PROMPT,
     TASKS_CFG,
+    FEATURE_GEN_PROMPT,
+    DECOMPOSE_REWARD_PROMPT 
 )
-from isaaclab_eureka.managers import EurekaTaskManager, LLMManager
+from isaaclab_eureka.managers import TacrekaTaskManager, LLMManager
 from isaaclab_eureka.utils import load_tensorboard_logs
 
 
-class Eureka:
+class Tacreka_Multi_Reward_Generation:
     """Orchestrates the training of the RL agent using the LLM."""
 
     def __init__(
@@ -83,7 +85,7 @@ class Eureka:
         )
 
         print("[INFO]: Setting up the Task Manager...")
-        self._task_manager = EurekaTaskManager(
+        self._task_manager = TacrekaTaskManager(
             task=task,
             device=device,
             env_seed=env_seed,
@@ -151,7 +153,12 @@ class Eureka:
         import numpy as np
 
         # Initial prompts
-        user_prompt = DIRECT_WORKFLOW_TASK_PROMPT.format(
+        # user_prompt = DIRECT_WORKFLOW_TASK_PROMPT.format(
+        #     task_description=self._task_description,
+        #     success_metric_to_win=self._success_metric_to_win,
+        #     get_observations_method_as_string=self._task_manager.get_observations_method_as_string,
+        # )
+        feature_gen_prompt = FEATURE_GEN_PROMPT.format(
             task_description=self._task_description,
             success_metric_to_win=self._success_metric_to_win,
             get_observations_method_as_string=self._task_manager.get_observations_method_as_string,
@@ -164,16 +171,32 @@ class Eureka:
 
         for iter in range(max_eureka_iterations):
             print(f"\n{'#' * 20} Running Eureka Iteration {iter} {'#' * 20} \n")
-            # Generate the GPT reward methods
-            llm_outputs = self._llm_manager.prompt(user_prompt=user_prompt, assistant_prompt=assistant_prompt)
-            gpt_reward_method_strings = llm_outputs["reward_strings"]
-            # Log the llm outputs
-            for idx, gpt_reward_method_string in enumerate(gpt_reward_method_strings):
-                self._tensorboard_writer.add_text(f"Run_{idx}/raw_llm_output", llm_outputs["raw_outputs"][idx], iter)
-                if self._use_wandb and self._wandb:
-                    self._wandb.log({f"Run_{idx}/raw_llm_output": llm_outputs["raw_outputs"][idx]}, step=iter)
+            # Generate the GPT reward feature generation
+            feature_gen_llm_outputs = self._llm_manager.feature_gen(user_prompt=feature_gen_prompt, assistant_prompt=assistant_prompt)
+            feature_output = feature_gen_llm_outputs["feature_strings"]
+            gpt_reward_list = []
+            for idx, feature_list in enumerate(feature_output):
+                feature_reward_list = []
+                for idf, feature_string in enumerate(feature_list):
+                    user_prompt = DECOMPOSE_REWARD_PROMPT.format(feature_name=feature_string["feature_name"], intent=feature_string["intent"], measurable_signals=feature_string["measurable_signals"], proxy_metric=feature_string["proxy_metric"], desired_direction=feature_string["desired_direction"], typical_failure_mode=feature_string["typical_failure_mode"], task_description=self._task_description, success_metric_to_win=self._success_metric_to_win, get_observations_method_as_string=self._task_manager.get_observations_method_as_string)
+                    llm_outputs = self._llm_manager.prompt(user_prompt=user_prompt, assistant_prompt=assistant_prompt)
+                    gpt_reward_method_strings = llm_outputs["reward_strings"]
+                    feature_reward_list.append(gpt_reward_method_strings)
+                    # Log the llm outputs
+                    self._tensorboard_writer.add_text(f"Run_{idx}/feature_{idf}/raw_llm_output", llm_outputs["raw_outputs"][idx], iter)
+                    if self._use_wandb and self._wandb:
+                        self._wandb.log({f"Run_{idx}/feature_{idf}/raw_llm_output": llm_outputs["raw_outputs"][idx]}, step=iter)
+                gpt_reward_list.append(feature_reward_list)
+            
+            # llm_outputs = self._llm_manager.prompt(user_prompt=user_prompt, assistant_prompt=assistant_prompt)
+            # gpt_reward_method_strings = llm_outputs["reward_strings"]
+            # # Log the llm outputs
+            # for idx, gpt_reward_method_string in enumerate(gpt_reward_method_strings):
+            #     self._tensorboard_writer.add_text(f"Run_{idx}/raw_llm_output", llm_outputs["raw_outputs"][idx], iter)
+            #     if self._use_wandb and self._wandb:
+            #         self._wandb.log({f"Run_{idx}/raw_llm_output": llm_outputs["raw_outputs"][idx]}, step=iter)
             # Train the RL agent
-            results = self._task_manager.train(gpt_reward_method_strings)
+            results = self._task_manager.train_feature(gpt_reward_list)
             # Give TensorBoard time to flush logs before reading them
             import time
             time.sleep(1.0)  # Wait 1 second for TensorBoard to flush
@@ -181,7 +204,6 @@ class Eureka:
             iter_best_success_metric = None
             best_run_idx = 0
             for idx, result in enumerate(results):
-                print(f"\n{'+' * 20} Evaluating Eureka Result {idx} {'+' * 20} \n")
                 if not result["success"]:
                     user_feedback_prompt = TASK_FAILURE_FEEDBACK_PROMPT.format(traceback_msg=result["exception"])
                 else:
@@ -225,6 +247,7 @@ class Eureka:
                             best_run_results["success_metric"] = iter_best_success_metric
                             best_run_results["gpt_reward_method"] = gpt_reward_method_strings[idx]
                             best_run_results["task_feedback"] = eureka_task_feedback
+                            print("logging best metric to wandb")
                             # Log best metric to wandb
                             if self._use_wandb and self._wandb:
                                 self._wandb.log({

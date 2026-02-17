@@ -4,6 +4,7 @@
 
 import datetime
 import os
+import json
 from typing import Literal
 
 # we import this here to avoid GLIBCXX_3.4.30 error in Isaac Sim 5.1
@@ -12,16 +13,23 @@ from isaaclab_eureka import EUREKA_ROOT_DIR
 from isaaclab_eureka.config import (
     DIRECT_WORKFLOW_INITIAL_PROMPT,
     DIRECT_WORKFLOW_TASK_PROMPT,
-    TASK_FAILURE_FEEDBACK_PROMPT,
-    TASK_SUCCESS_POST_FEEDBACK_PROMPT,
-    TASK_SUCCESS_PRE_FEEDBACK_PROMPT,
     TASKS_CFG,
+    FEATURE_GEN_FORMATTING_PROMPT,
+    FEATURE_GEN_FEEDBACK_PROMPT,
+    FEATURE_GEN_INITIAL_PROMPT,
+    FEATURE_GEN_PROMPT,
+    FEATURE_AS_ONE_REWARD_PROMPT,
+    FEATURE_AS_ONE_REWARD_INITIAL_PROMPT,
+    FEATURE_GEN_POST_FEEDBACK_PROMPT,
+    FEATURE_AS_ONE_FAILURE_FEEDBACK_PROMPT,
+    FEATURE_AS_ONE_SUCCESS_POST_FEEDBACK_PROMPT,
+    TASK_SUCCESS_PRE_FEEDBACK_PROMPT
 )
 from isaaclab_eureka.managers import EurekaTaskManager, LLMManager
 from isaaclab_eureka.utils import load_tensorboard_logs
 
 
-class Eureka:
+class Tacreka_SR:
     """Orchestrates the training of the RL agent using the LLM."""
 
     def __init__(
@@ -73,13 +81,15 @@ class Eureka:
         self._task_description = task_description
         self._feedback_subsampling = feedback_subsampling
         self._num_processes = num_parallel_runs
+        self._num_parallel_runs = 1
 
         print("[INFO]: Setting up the LLM Manager...")
         self._llm_manager = LLMManager(
             gpt_model=gpt_model,
             num_suggestions=self._num_processes,
             temperature=temperature,
-            system_prompt=DIRECT_WORKFLOW_INITIAL_PROMPT,
+            system_prompt=FEATURE_AS_ONE_REWARD_INITIAL_PROMPT,
+            feature_prompt=FEATURE_GEN_INITIAL_PROMPT,
         )
 
         print("[INFO]: Setting up the Task Manager...")
@@ -88,7 +98,7 @@ class Eureka:
             device=device,
             env_seed=env_seed,
             rl_library=rl_library,
-            num_processes=self._num_processes,
+            num_processes=self._num_parallel_runs,
             max_training_iterations=max_training_iterations,
             success_metric_string=success_metric_string,
         )
@@ -140,7 +150,8 @@ class Eureka:
                 print("[WARNING]: wandb not installed. Install with 'pip install wandb' to enable wandb logging.")
                 self._use_wandb = False
                 self._wandb = None
-
+    
+    user_feedback_prompt_rw_gen = None
     def run(self, max_eureka_iterations: int):
         """Run the Eureka training loop.
 
@@ -151,13 +162,14 @@ class Eureka:
         import numpy as np
 
         # Initial prompts
-        user_prompt = DIRECT_WORKFLOW_TASK_PROMPT.format(
+        feature_gen_prompt = FEATURE_GEN_PROMPT.format(
             task_description=self._task_description,
             success_metric_to_win=self._success_metric_to_win,
             get_observations_method_as_string=self._task_manager.get_observations_method_as_string,
         )
         # The assistant prompt is used to feed the previous LLM output back into the LLM
         assistant_prompt = None
+        rw_gen_assistant_prompt = None
 
         # The best run across all iterations
         best_run_results = {"success_metric": None}
@@ -165,15 +177,39 @@ class Eureka:
         for iter in range(max_eureka_iterations):
             print(f"\n{'#' * 20} Running Eureka Iteration {iter} {'#' * 20} \n")
             # Generate the GPT reward methods
-            llm_outputs = self._llm_manager.prompt(user_prompt=user_prompt, assistant_prompt=assistant_prompt)
-            gpt_reward_method_strings = llm_outputs["reward_strings"]
+            if feature_gen_prompt != "N":
+                feature_gen_outputs = self._llm_manager.feature_gen(user_prompt=feature_gen_prompt, assistant_prompt=assistant_prompt)
+                feature_strings = feature_gen_outputs["feature_strings"]
+            # self._llm_manager.single_feature_reset()
+            print(f"\n{'+' * 20} Feature Generated {'+' * 20} \n")
+            llm_outputs = []
+            gpt_reward_method_strings = []
+            for idx, feature_string in enumerate(feature_strings):
+
+                reward_code = self._llm_manager.single_feature_prompt(user_prompt=FEATURE_AS_ONE_REWARD_PROMPT.format(
+                    task_description=self._task_description,
+                    success_metric_to_win=self._success_metric_to_win,
+                    get_observations_method_as_string=self._task_manager.get_observations_method_as_string,
+                    FEATURES_JSON=feature_string,
+                ), assistant_prompt=rw_gen_assistant_prompt, 
+                num_suggestion= self._num_parallel_runs, # only one suggestion is needed for the single feature prompt
+                )
+                llm_outputs.append(reward_code)
             # Log the llm outputs
-            for idx, gpt_reward_method_string in enumerate(gpt_reward_method_strings):
-                self._tensorboard_writer.add_text(f"Run_{idx}/raw_llm_output", llm_outputs["raw_outputs"][idx], iter)
-                if self._use_wandb and self._wandb:
-                    self._wandb.log({f"Run_{idx}/raw_llm_output": llm_outputs["raw_outputs"][idx]}, step=iter)
+            i = 0
+            for idx, llm_output in enumerate(llm_outputs):
+                raw_outputs = llm_output["raw_outputs"]
+                reward_strings = llm_output["reward_strings"]
+                for idx_raw, raw_output in enumerate(raw_outputs):
+                    i += 1
+                    self._tensorboard_writer.add_text(f"Run_{i}/raw_llm_output", raw_output, iter)
+                    self._tensorboard_writer.add_text(f"Run_{i}/feature_idx", str(idx), iter)
+                    gpt_reward_method_strings.append({"reward_strings" : reward_strings[idx_raw], "feature_idx" : idx, "raw_output" : raw_output})
+
             # Train the RL agent
-            results = self._task_manager.train(gpt_reward_method_strings)
+            results = []
+            for llm_output in llm_outputs:
+                results += self._task_manager.train(llm_output["reward_strings"])
             # Give TensorBoard time to flush logs before reading them
             import time
             time.sleep(1.0)  # Wait 1 second for TensorBoard to flush
@@ -181,26 +217,37 @@ class Eureka:
             iter_best_success_metric = None
             best_run_idx = 0
             for idx, result in enumerate(results):
-                print(f"\n{'+' * 20} Evaluating Eureka Result {idx} {'+' * 20} \n")
                 if not result["success"]:
-                    user_feedback_prompt = TASK_FAILURE_FEEDBACK_PROMPT.format(traceback_msg=result["exception"])
+                    user_feedback_prompt_rw_gen = FEATURE_AS_ONE_FAILURE_FEEDBACK_PROMPT.format(traceback_msg=result["exception"])
+                    user_feedback_prompt = "N"
+                    print("Failed to generate correct reward function, using previous feedback prompt")
                 else:
                     # Compute the performance metrics
+                    print("Successfully generated reward function, generating task feedback")
                     eureka_task_feedback, success_metric_max, rewards_correlation = self._get_eureka_task_feedback(
                         result["log_dir"], self._feedback_subsampling
                     )
 
                     # Generate the user feedback prompt
                     user_feedback_prompt = (
-                        TASK_SUCCESS_PRE_FEEDBACK_PROMPT.format(feedback_subsampling=self._feedback_subsampling)
+                        FEATURE_GEN_FEEDBACK_PROMPT.format(feedback_subsampling=self._feedback_subsampling)
                         + eureka_task_feedback
-                        + TASK_SUCCESS_POST_FEEDBACK_PROMPT
+                        + FEATURE_GEN_POST_FEEDBACK_PROMPT
                     )
+
+                    # user_feedback_prompt_rw_gen = (
+                    #     TASK_SUCCESS_PRE_FEEDBACK_PROMPT.format(feedback_subsampling=self._feedback_subsampling)
+                    #     + eureka_task_feedback
+                    #     + FEATURE_AS_ONE_SUCCESS_POST_FEEDBACK_PROMPT
+                    # )
+                    user_feedback_prompt_rw_gen = None
 
                     # Store the results
                     results[idx]["eureka_task_feedback"] = eureka_task_feedback
                     results[idx]["success_metric_max"] = success_metric_max
                     results[idx]["rewards_correlation"] = rewards_correlation
+                    feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
+                    results[idx]["reward_components"] = feature_gen_outputs["raw_outputs"][feature_idx]
                     # Log metrics to wandb
                     if self._use_wandb and self._wandb:
                         self._wandb.log({
@@ -223,8 +270,10 @@ class Eureka:
                             < np.abs(best_run_results["success_metric"] - self._success_metric_to_win)
                         ):
                             best_run_results["success_metric"] = iter_best_success_metric
-                            best_run_results["gpt_reward_method"] = gpt_reward_method_strings[idx]
+                            best_run_results["gpt_reward_method"] = gpt_reward_method_strings[idx]["reward_strings"]
+                            best_run_results["feature_idx"] = gpt_reward_method_strings[idx]["feature_idx"]
                             best_run_results["task_feedback"] = eureka_task_feedback
+                            print("logging best metric to wandb")
                             # Log best metric to wandb
                             if self._use_wandb and self._wandb:
                                 self._wandb.log({
@@ -234,8 +283,11 @@ class Eureka:
                                 }, step=iter)
 
                 # Add the prompts
+                feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
                 results[idx]["user_prompt"] = user_feedback_prompt
-                results[idx]["assistant_prompt"] = llm_outputs["raw_outputs"][idx]
+                results[idx]["assistant_prompt_rw_gen"] = user_feedback_prompt_rw_gen
+                results[idx]["assistant_prompt"] = feature_gen_outputs["raw_outputs"][feature_idx]
+                results[idx]["feature_idx"] = feature_idx
 
             self._log_iteration_results(iter, results)
 
@@ -248,7 +300,8 @@ class Eureka:
                 break
 
             assistant_prompt = results[best_run_idx]["assistant_prompt"]
-            user_prompt = results[best_run_idx]["user_prompt"]
+            feature_gen_prompt = results[best_run_idx]["user_prompt"]
+            rw_gen_assistant_prompt = results[best_run_idx]["assistant_prompt_rw_gen"]
 
         self._log_final_results(best_run_results)
         # Close the task manager
@@ -339,6 +392,7 @@ class Eureka:
                 f.write(f"{'#' * 20} Iteration: {iter} {'#' * 20}\n\n")
                 f.write(f"{'*' * 20} Run: {idx} {'*' * 20}\n")
                 f.write(f"- GPT reward method {result['assistant_prompt']}\n")
+                f.write(f"- Feature idx: {result['feature_idx']}\n")
                 if result["success"]:
                     f.write(f"Training successful with the following metrics:\n{result['eureka_task_feedback']}\n")
                     f.write(f"Reward correlation with oracle rewards:\n{result['rewards_correlation']}\n")

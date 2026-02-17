@@ -88,7 +88,7 @@ class Eureka:
             device=device,
             env_seed=env_seed,
             rl_library=rl_library,
-            num_processes=self._num_processes,
+            num_processes=1,
             max_training_iterations=max_training_iterations,
             success_metric_string=success_metric_string,
         )
@@ -173,7 +173,12 @@ class Eureka:
                 if self._use_wandb and self._wandb:
                     self._wandb.log({f"Run_{idx}/raw_llm_output": llm_outputs["raw_outputs"][idx]}, step=iter)
             # Train the RL agent
-            results = self._task_manager.train(gpt_reward_method_strings)
+            results = []
+            i = 0
+            for gpt_reward_method_string in gpt_reward_method_strings:
+                print(f"\n{'#' * 20} Running Eureka Training Run {i} {'#' * 20} \n")
+                i += 1
+                results.append(self._task_manager.train([gpt_reward_method_string])[0])
             # Give TensorBoard time to flush logs before reading them
             import time
             time.sleep(1.0)  # Wait 1 second for TensorBoard to flush

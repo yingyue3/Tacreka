@@ -2,16 +2,33 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Script to train an RL agent with Isaac Lab Eureka or the REvolve baselines."""
+"""Script to train an RL agent with Isaac Lab Eureka, Tacreka, or REvolve baselines."""
 
 import argparse
 import os
 
-from isaaclab_eureka import Eureka, Revolve, RevolveFull
+from isaaclab_eureka import Eureka, Revolve, RevolveFull, Tacreka_SR
 
 
 def main(args_cli):
-    if args_cli.baseline == "revolve":
+    if args_cli.baseline == "tacreka_sr":
+        tacreka = Tacreka_SR(
+            task=args_cli.task,
+            rl_library=args_cli.rl_library,
+            num_parallel_runs=args_cli.num_parallel_runs,
+            device=args_cli.device,
+            env_seed=args_cli.env_seed,
+            max_training_iterations=args_cli.max_training_iterations,
+            feedback_subsampling=args_cli.feedback_subsampling,
+            temperature=args_cli.temperature,
+            gpt_model=args_cli.gpt_model,
+            use_wandb=args_cli.use_wandb,
+            wandb_project=args_cli.wandb_project,
+            wandb_entity=args_cli.wandb_entity,
+            wandb_name=args_cli.wandb_name,
+        )
+        tacreka.run(max_eureka_iterations=args_cli.max_eureka_iterations)
+    elif args_cli.baseline == "revolve":
         # Pairwise comparisons need an even number of suggestions; we derive pairs from requested runs.
         num_pairs = max(1, args_cli.num_parallel_runs // 2)
         if args_cli.num_parallel_runs % 2 != 0:
@@ -82,7 +99,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train an RL agent with Eureka.")
     parser.add_argument("--task", type=str, default="Isaac-Cartpole-Direct-v0", help="Name of the task.")
     parser.add_argument(
-        "--num_parallel_runs", type=int, default=2, help="Number of Eureka runs to execute in parallel."
+        "--num_parallel_runs", type=int, default=1, help="Number of Eureka runs to execute in parallel."
     )
     parser.add_argument("--device", type=str, default="cuda", help="The device to run training on.")
     parser.add_argument("--env_seed", type=int, default=42, help="The random seed to use for the environment.")
@@ -116,9 +133,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--baseline",
         type=str,
-        default="eureka",
-        choices=["eureka", "revolve", "revolve_full"],
-        help="Choose between Eureka (default), REvolve pairwise baseline, or REvolve full evolutionary baseline.",
+        default="tacreka_sr",
+        choices=["tacreka_sr", "eureka", "revolve", "revolve_full"],
+        help="Choose between Tacreka single-reward (default), Eureka, REvolve pairwise, or REvolve full baseline.",
     )
     parser.add_argument(
         "--revolve_individuals_per_generation",

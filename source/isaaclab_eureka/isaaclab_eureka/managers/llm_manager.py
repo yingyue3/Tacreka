@@ -4,6 +4,7 @@
 
 import os
 import re
+import json
 
 import openai
 
@@ -19,7 +20,7 @@ class LLMManager:
     - For the Azure OpenAI API, the environment variables AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY must be set.
     """
 
-    def __init__(self, gpt_model: str, num_suggestions: int, temperature: float, system_prompt: str):
+    def __init__(self, gpt_model: str, num_suggestions: int, temperature: float, system_prompt: str, feature_prompt: str = None):
         """Initialize the LLMManager
 
         Args:
@@ -33,7 +34,8 @@ class LLMManager:
         self._num_suggestions = num_suggestions
         self._temperature = temperature
         self._prompts = [{"role": "system", "content": system_prompt}]
-
+        self._feature_prompts = [{"role": "system", "content": feature_prompt}]
+        self._single_feature_reward_generation_prompts = [{"role": "system", "content": system_prompt}]
         if "AZURE_OPENAI_API_KEY" in os.environ:
             self._client = openai.AzureOpenAI(api_version="2024-02-01")
         elif "OPENAI_API_KEY" in os.environ:
@@ -58,6 +60,49 @@ class LLMManager:
             # Remove leading newline characters
             code_string = code_string.lstrip("\n")
         return code_string
+    
+    def extract_json_from_response(self, response: str):
+        feature_dic = json.loads(response)
+        features = feature_dic["features"]
+        return features
+
+    def feature_gen(self, user_prompt: str, assistant_prompt: str = None) -> list[str]:
+        """Call the LLM API to generate features
+
+        Args:
+            user_prompt: The user prompt to provide to the LLM API
+
+        Returns:
+            A dictionary containing the feature strings and raw outputs from the LLM
+        """
+        if assistant_prompt is not None:
+            self._feature_prompts.append({"role": "assistant", "content": assistant_prompt})
+        self._feature_prompts.append({"role": "user", "content": user_prompt})
+
+        # The official Eureka code only keeps the last round of feedback
+        if len(self._feature_prompts) == 4:
+            self._feature_prompts.pop(2)
+            self._feature_prompts.pop(2)
+        try:
+            responses = self._client.chat.completions.create(
+                model=self._gpt_model,
+                messages=self._feature_prompts,
+                temperature=self._temperature,
+                n=self._num_suggestions,
+            )
+        except Exception as e:
+            raise RuntimeError("An error occurred while prompting the LLM") from e
+        
+        raw_outputs = [response.message.content for response in responses.choices]
+        try:
+            feature_strings = [self.extract_json_from_response(raw_output) for raw_output in raw_outputs]
+        except Exception as e:
+            # raise RuntimeError("An error occurred while extracting the feature strings") from e
+            print(f"An error occurred while extracting the feature strings: {e}", e)
+            feature_strings = raw_outputs
+        # print("--------------------------------FEATURE STRINGS--------------------------------")
+        # print(feature_strings)
+        return {"feature_strings": feature_strings, "raw_outputs": raw_outputs}
 
     def prompt(self, user_prompt: str, assistant_prompt: str = None) -> list[str]:
         """Call the LLM API to collect responses
@@ -93,8 +138,50 @@ class LLMManager:
 
         raw_outputs = [response.message.content for response in responses.choices]
         reward_strings = [self.extract_code_from_response(raw_output) for raw_output in raw_outputs]
-        print("+++++++test+++++++")
-        print("reward_strings length: ", len(reward_strings))
-        print("num_suggestions: ", self._num_suggestions)
-        print("+++++++test+++++++")
         return {"reward_strings": reward_strings, "raw_outputs": raw_outputs}
+
+    def single_feature_prompt(self, user_prompt: str, assistant_prompt: str = None, num_suggestion: int = 1) -> list[str]:
+        """Call the LLM API to collect responses
+
+        Args:
+            user_prompt: The user prompt to provide to the LLM API
+            assistant_prompt: The assistant prompt to provide to the LLM API
+
+        Returns:
+            A dictionary containing the reward strings and raw outputs from the LLM
+
+        Raises:
+            Exception: If there is an error with the LLM API
+        """
+        # self._single_feature_reward_generation_prompts = self._prompts.copy()
+        if assistant_prompt is not None:
+            self._single_feature_reward_generation_prompts .append({"role": "assistant", "content": assistant_prompt})
+        self._single_feature_reward_generation_prompts.append({"role": "user", "content": user_prompt})
+
+        # The official Eureka code only keeps the last round of feedback
+        if len(self._single_feature_reward_generation_prompts) == 6:
+            self._single_feature_reward_generation_prompts.pop(2)
+            self._single_feature_reward_generation_prompts.pop(2)
+
+        try:
+            responses = self._client.chat.completions.create(
+                model=self._gpt_model,
+                messages=self._single_feature_reward_generation_prompts,
+                temperature=self._temperature,
+                n=num_suggestion,
+            )
+        except Exception as e:
+            raise RuntimeError("An error occurred while prompting the LLM") from e
+
+        raw_outputs = [response.message.content for response in responses.choices]
+        reward_strings = [self.extract_code_from_response(raw_output) for raw_output in raw_outputs]
+        # print("--------------------------------REWARD GENERATION PROMPTS--------------------------------")
+        # print(self._single_feature_reward_generation_prompts)
+        print("--------------------------------REWARD STRINGS GENERATED--------------------------------")
+        # print(reward_strings)
+        return {"reward_strings": reward_strings, "raw_outputs": raw_outputs}
+    
+    def single_feature_reset(self):
+        self._single_feature_reward_generation_prompts = []
+
+
