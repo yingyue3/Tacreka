@@ -141,6 +141,7 @@ class RevolveFull:
             num_processes=1,
             max_training_iterations=max_training_iterations,
             success_metric_string=self._task_cfg.get("success_metric"),
+            log_namespace="revolve_full",
         )
 
         self._use_wandb = use_wandb
