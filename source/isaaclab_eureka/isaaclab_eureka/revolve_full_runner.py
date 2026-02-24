@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import datetime
+import glob
 import math
 import os
 import random
@@ -117,6 +118,9 @@ class RevolveFull:
         self._migration_prob = migration_prob
         self._use_hf = use_human_feedback
         self._hf_dir = human_feedback_dir
+        self._success_metric_target = float(self._task_cfg["success_metric_to_win"])
+        # Island selection assumes "higher is better". We map to a distance-based fitness.
+        self._failure_fitness = -1e9
 
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self._log_dir = os.path.join(EUREKA_ROOT_DIR, "logs", "revolve_full", task, timestamp)
@@ -170,6 +174,7 @@ class RevolveFull:
                         "max_island_size": max_island_size,
                         "crossover_prob": crossover_prob,
                         "migration_prob": migration_prob,
+                        "fitness_formula": "negative_abs_distance_to_target",
                     },
                     dir=self._log_dir,
                 )
@@ -179,7 +184,7 @@ class RevolveFull:
                 self._wandb = None
 
     def run(self):
-        best_overall = {"fitness": None, "reward": None, "feedback": ""}
+        best_overall = {"fitness": None, "reward": None, "feedback": "", "rewards_correlation": None}
         base_user_prompt = DIRECT_WORKFLOW_TASK_PROMPT.format(
             task_description=self._task_cfg["description"],
             success_metric_to_win=self._task_cfg["success_metric_to_win"],
@@ -233,20 +238,24 @@ class RevolveFull:
                     continue
 
                 result = self._task_manager.train([reward_string])[0]
-                fitness = 0.0
+                success_metric_value = None
+                fitness = self._failure_fitness
                 feedback = ""
                 correlation = 0.0
                 if result["success"]:
                     feedback, success_metric_max, correlation = self._get_eureka_task_feedback(
                         result["log_dir"], feedback_subsampling=10
                     )
-                    fitness = success_metric_max if success_metric_max is not None else 0.0
+                    success_metric_value = success_metric_max
+                    if success_metric_value is not None:
+                        fitness = self._to_evolution_fitness(success_metric_value)
                 else:
                     feedback = result.get("exception", "")
                     success_metric_max = None
 
                 metrics_dict = {
                     "fitness": fitness,
+                    "success_metric": success_metric_value,
                     "rewards_correlation": correlation,
                     "success": result["success"],
                     "operator": operator,
@@ -262,9 +271,26 @@ class RevolveFull:
                     and abs(success_metric_max - self._task_cfg["success_metric_to_win"])
                     < abs(best_overall["fitness"] - self._task_cfg["success_metric_to_win"])
                 ):
+                    candidate_id = f"gen{generation_id}_ctr{counter_id}_isl{island_id}"
+                    reward_file = os.path.join(
+                        self._db_dir, f"island_{island_id}", "generated_fns", f"{generation_id}_{counter_id}.txt"
+                    )
+                    fitness_file = os.path.join(
+                        self._db_dir, f"island_{island_id}", "fitness_scores", f"{generation_id}_{counter_id}.txt"
+                    )
                     best_overall["fitness"] = success_metric_max
                     best_overall["reward"] = reward_string
                     best_overall["feedback"] = feedback
+                    best_overall["rewards_correlation"] = correlation
+                    best_overall["evolution_fitness"] = fitness
+                    best_overall["candidate_id"] = candidate_id
+                    best_overall["candidate_generation"] = generation_id
+                    best_overall["candidate_counter"] = counter_id
+                    best_overall["candidate_island"] = island_id
+                    best_overall["training_log_dir"] = result.get("log_dir")
+                    best_overall["candidate_reward_file"] = reward_file
+                    best_overall["candidate_fitness_file"] = fitness_file
+                    best_overall["checkpoint_file"] = self._resolve_checkpoint_path(result.get("log_dir"))
 
             if len(rew_fn_strings) == 0:
                 print("[WARN] No valid reward functions generated; skipping generation update.")
@@ -311,6 +337,29 @@ class RevolveFull:
 
         self._task_manager.close()
         self._log_final_results(best_overall)
+
+    def _to_evolution_fitness(self, success_metric: float) -> float:
+        """Map task score to island fitness where larger is always better."""
+        return -abs(float(success_metric) - self._success_metric_target)
+
+    @staticmethod
+    def _resolve_checkpoint_path(log_dir: Optional[str]) -> Optional[str]:
+        """Pick the latest model checkpoint from a training log directory."""
+        if not log_dir:
+            return None
+        checkpoint_paths = glob.glob(os.path.join(log_dir, "model_*.pt"))
+        if not checkpoint_paths:
+            return None
+
+        def _checkpoint_step(path: str) -> int:
+            filename = os.path.basename(path)
+            stem = os.path.splitext(filename)[0]
+            try:
+                return int(stem.split("_")[-1])
+            except ValueError:
+                return -1
+
+        return max(checkpoint_paths, key=_checkpoint_step)
 
     def _get_eureka_task_feedback(self, log_dir: str, feedback_subsampling: int) -> tuple[str, float, float]:
         import numpy as np
@@ -363,12 +412,36 @@ class RevolveFull:
         output = ""
         if best_run_results.get("fitness") is not None:
             output += f"- Success metric: {best_run_results['fitness']}\n"
+            output += f"- Best candidate id: {best_run_results.get('candidate_id', 'unknown')}\n"
+            output += (
+                f"- Best candidate details: generation={best_run_results.get('candidate_generation', 'unknown')}, "
+                f"counter={best_run_results.get('candidate_counter', 'unknown')}, "
+                f"island={best_run_results.get('candidate_island', 'unknown')}\n"
+            )
+            output += (
+                f"- Best candidate reward file: {best_run_results.get('candidate_reward_file', 'unknown')}\n"
+            )
+            output += (
+                f"- Best candidate fitness file: {best_run_results.get('candidate_fitness_file', 'unknown')}\n"
+            )
+            output += (
+                f"- Best candidate reward correlation: {best_run_results.get('rewards_correlation', 'unknown')}\n"
+            )
+            output += (
+                f"- Evolution fitness formula: -abs(task_score - {self._success_metric_target:.4f})\n"
+            )
+            output += f"- Best candidate evolution fitness: {best_run_results.get('evolution_fitness', 'unknown')}\n"
+            output += f"- Best candidate training log dir: {best_run_results.get('training_log_dir', 'unknown')}\n"
+            output += f"- Best candidate checkpoint: {best_run_results.get('checkpoint_file', 'unknown')}\n"
             output += f"- GPT reward method:\n{best_run_results.get('reward')}\n"
             output += f"- Task metrics:\n{best_run_results.get('feedback', '')}\n"
             if self._use_wandb and self._wandb:
                 self._wandb.log(
                     {
                         "final/best_success_metric": best_run_results["fitness"],
+                        "final/best_rewards_correlation": best_run_results.get("rewards_correlation"),
+                        "final/best_candidate_id": best_run_results.get("candidate_id"),
+                        "final/best_candidate_checkpoint": best_run_results.get("checkpoint_file"),
                         "final/gpt_reward_method": best_run_results.get("reward"),
                         "final/task_feedback": best_run_results.get("feedback", ""),
                     }
@@ -376,7 +449,7 @@ class RevolveFull:
         else:
             output += "- No successful training run\n"
             if self._use_wandb and self._wandb:
-                self._wandb.log({"final/best_success_metric": None})
+                self._wandb.log({"final/best_success_metric": None, "final/best_rewards_correlation": None})
 
         print("Final results:\n", output)
         with open(f"{self._log_dir}/revolve_full_final_result.txt", "w") as f:

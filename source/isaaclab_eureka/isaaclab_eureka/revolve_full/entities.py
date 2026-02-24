@@ -221,6 +221,12 @@ class Island:
                 return
 
     def only_keep_best(self):
+        if self.size == 0:
+            logging.info(
+                "Island %d is empty during reset; skipping only_keep_best.",
+                self.island_id,
+            )
+            return
         fittest_individual = self.fittest_individual
         for individual in self.individuals:
             if individual.fitness_score == fittest_individual.fitness_score:

@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 #SBATCH --account=rrg-bengioy-ad_gpu
-#SBATCH --time=2:00:00
+#SBATCH --time=4:00:00
 #SBATCH --mem=20G
 #SBATCH --cpus-per-task=1
 #SBATCH --gpus=h100:1
-#SBATCH --job-name=isaaclab-Isaac-Cartpole
 
 set -euo pipefail
 
@@ -42,5 +41,5 @@ if [ -z "${OPENAI_API_KEY:-}" ] && { [ -z "${AZURE_OPENAI_API_KEY:-}" ] || [ -z 
     exit 1
 fi
 
-# python scripts/train.py --task=Isaac-Quadcopter-Direct-v0 --max_training_iterations=100 --rl_library="rsl_rl"
-"$VENV_PYTHON" scripts/train.py --task=Isaac-Cartpole-Direct-v0 --max_training_iterations=100 --rl_library="rsl_rl" --baseline="revolve_full"
+"$VENV_PYTHON" scripts/train.py --task=Isaac-Quadcopter-Direct-v0 --max_training_iterations=100 --rl_library="rsl_rl" --baseline="revolve_full" --max_eureka_iterations=30
+# "$VENV_PYTHON" scripts/train.py --task=Isaac-Cartpole-Direct-v0 --max_training_iterations=100 --rl_library=\"rsl_rl\" --baseline=\"revolve_full\"
