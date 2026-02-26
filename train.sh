@@ -15,4 +15,3 @@ export WANDB_MODE=offline
 export ISAAC_ACCEPT_EULA=YES
 
 python scripts/train.py --task=Isaac-Quadcopter-Direct-v0 --max_training_iterations=100 --rl_library="rsl_rl"
-python scripts/train.py --task=Isaac-Cartpole-Direct-v0 --max_training_iterations=100 --rl_library="rsl_rl"

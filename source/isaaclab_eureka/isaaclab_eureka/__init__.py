@@ -8,3 +8,4 @@ EUREKA_ROOT_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), *[".
 
 from .eureka import Eureka
 from .tacreka_sr import Tacreka_SR
+from .tacreka_test_iterate import Tacreka_SR

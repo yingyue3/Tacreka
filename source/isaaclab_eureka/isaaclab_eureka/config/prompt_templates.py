@@ -5,6 +5,9 @@
 """Template strings used for prompting in Isaac Lab Eureka."""
 
 
+from cgi import test
+
+
 DIRECT_WORKFLOW_REWARD_FORMATTING_INSTRUCTIONS = """
 Your reward function should use useful variables from the environment as inputs.
 It must comply to the following signature exactly:
@@ -198,18 +201,23 @@ Each feature contains:
 FEATURE_AS_ONE_FAILURE_FEEDBACK_PROMPT = """
 Executing the reward function code above has the following error: {traceback_msg}.
 Please fix the bug and provide a new, improved reward function!
-""" + FEATURE_GEN_FORMATTING_PROMPT
+""" + FEATURE_AS_ONE_REWARD_FORMATTING_PROMPT
+
+FEATURE_AS_ONE_SUCCESS_PRE_FEEDBACK_PROMPT = """
+We trained a RL policy using the provided reward function code and tracked the values of the individual components in the reward function as well as global policy metrics such as success rates and episode lengths after every {feedback_subsampling} epochs and the maximum, mean, minimum values encountered:
+"""
 
 FEATURE_AS_ONE_SUCCESS_POST_FEEDBACK_PROMPT = """
 Please carefully analyze the policy feedback and provide a new, improved reward function that can better solve the task. Some helpful tips for analyzing the policy feedback:
     (1) If the success rates are always near zero, then you must rewrite the entire reward function
     (2) If the values for a certain reward component are near identical throughout, then this means RL is not able to optimize this component as it is written. You may consider
         (a) Changing its scale or the value of its temperature parameter
-        (b) Re-writing the reward component
+        (b) Re-writing the reward components
         (c) Discarding the reward component
     (3) If some reward components' magnitude is significantly larger, then you must re-scale its value to a proper range
-Please analyze each existing reward component in the suggested manner above first, and then write the reward function code.
-""" + FEATURE_AS_ONE_REWARD_FORMATTING_PROMPT
+Please analyze each existing reward component in the suggested manner above first, and then write the reward function code based on the refined set of features.
+Features to implement (refined): {FEATURES_JSON}
+""" + DIRECT_WORKFLOW_REWARD_FORMATTING_INSTRUCTIONS
 
 DECOMPOSE_REWARD_PROMPT = """
 You are a reward engineer for reinforcement learning.
@@ -228,3 +236,67 @@ The desired task score is: {success_metric_to_win}
 Here is how we get the observations from the environment:
 {get_observations_method_as_string}
 """
+
+
+#################### TEST ITERATE PROMPT TEMPLATES ####################
+
+FEATURE_AS_ONE_REWARD_TEST_FORMATTING_PROMPT = """
+Features to implement (generated previously):
+{FEATURES_JSON}
+Your reward function should use useful variables from the environment as inputs.
+It must comply to the following signature exactly:
+
+def _get_rewards_eureka(self) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    ...
+    return reward, individual_rewards_dict
+
+Make sure any new tensor or variable you introduce is on the same device as self.device.
+The output of the reward function should consist of two items:
+    (1) the total reward, which has a dimension of (self.num_envs,) and is a torch.Tensor,
+    (2) a dictionary of each individual reward component.
+The code output should be formatted as a python code string: "```python ... ```" and contain only the get_rewards_eureka function.
+
+Some helpful tips for writing the reward function code:
+    (1) You may find it helpful to normalize the reward to a fixed range by applying transformations like torch.exp to the overall reward or its components
+    (2) If you choose to transform a reward component, then you must also introduce a temperature parameter inside the transformation function; this parameter must be a named variable in the reward function and it must not be an input variable. Each transformed reward component should have its own temperature variable
+    (3) Make sure the type of each input variable is correctly specified; a float input variable should not be specified as torch.Tensor
+    (4) Most importantly, the reward code's input variables must contain only attributes of the provided environment class definition (namely, variables that have prefix self.). Under no circumstance can you introduce new input variables.
+
+Hard requirements:
+1) Implement one reward component per feature: r_(feature_name)(...) -> Tensor of shape (num_envs,).
+2) Normalize / bound each component to roughly [-1, 1] or [0, 1] when possible (use exp, tanh, or smooth saturation).
+3) Avoid sparse-only rewards: each component should provide a learning signal across most states.
+4) Mitigate reward hacking: for each feature, add a small safeguard term if needed to prevent its “typical_failure_mode”.
+5) Use consistent scaling so no single component dominates by accident.
+6) Provide a final reward:
+   R = sum_i w_i * r_i
+   Use default weights w_i = 1.0 unless you have a strong reason; if you change weights, explain why.
+7) Most importantly, the reward code's input variables must contain only attributes of the provided environment class definition (namely, variables that have prefix self.). Under no circumstance can you introduce new input variables.
+
+
+Output requirements:
+- Output ONLY a single Python code block.
+- The code must define exactly one function:
+"""
+
+TEST_FAILURE_FEEDBACK_PROMPT = """
+Executing the reward function code above has the following error: {traceback_msg}.
+Please fix the bug and provide a new, improved reward function!
+""" + FEATURE_AS_ONE_REWARD_TEST_FORMATTING_PROMPT
+
+
+TEST_SUCCESS_PRE_FEEDBACK_PROMPT = """
+We trained a RL policy using the provided reward function code and tracked the values of the individual components in the reward function as well as global policy metrics such as success rates and episode lengths after every {feedback_subsampling} epochs and the maximum, mean, minimum values encountered:
+"""
+
+
+TEST_SUCCESS_POST_FEEDBACK_PROMPT = """
+Please carefully analyze the policy feedback and provide a new, improved reward function that can better solve the task. Some helpful tips for analyzing the policy feedback:
+    (1) If the success rates are always near zero, then you must rewrite the entire reward function
+    (2) If the values for a certain reward component are near identical throughout, then this means RL is not able to optimize this component as it is written. You may consider
+        (a) Changing its scale or the value of its temperature parameter
+        (b) Re-writing the reward component
+        (c) Discarding the reward component
+    (3) If some reward components' magnitude is significantly larger, then you must re-scale its value to a proper range
+Please analyze each existing reward component in the suggested manner above first, and then write the reward function code.
+""" + FEATURE_AS_ONE_REWARD_TEST_FORMATTING_PROMPT
