@@ -69,6 +69,9 @@ class TacrekaTaskManager:
         env_seed: int = 42,
         max_training_iterations: int = 100,
         success_metric_string: str = "",
+        video: bool = False,
+        video_length: int = 200,
+        video_interval: int = 2000,
     ):
         """Initialize the task manager. Each process will create an independent training run.
 
@@ -88,6 +91,9 @@ class TacrekaTaskManager:
         self._max_training_iterations = max_training_iterations
         self._success_metric_string = success_metric_string
         self._env_seed = env_seed
+        self._video = video
+        self._video_length = video_length
+        self._video_interval = video_interval
         if self._success_metric_string:
             self._success_metric_string = "extras['Eureka/success_metric'] = " + self._success_metric_string
 
@@ -208,7 +214,16 @@ class TacrekaTaskManager:
         if self._device == "cuda":
             device_id = get_freest_gpu()
             self._device = f"cuda:{device_id}"
-        app_launcher = AppLauncher(headless=True, device=self._device)
+        
+        # Enable cameras and video recording if requested
+        # For headless video recording, we need to pass video=True to AppLauncher
+        # and enable_cameras=True to enable camera rendering
+        app_launcher = AppLauncher(
+            headless=True, 
+            device=self._device,
+            enable_cameras=self._video,
+            video=self._video
+        )
         self._simulation_app = app_launcher.app
 
         import gymnasium as gym
@@ -219,7 +234,10 @@ class TacrekaTaskManager:
         env_cfg: DirectRLEnvCfg = parse_env_cfg(self._task)
         env_cfg.sim.device = self._device
         env_cfg.seed = self._env_seed
-        self._env = gym.make(self._task, cfg=env_cfg)
+        
+        # Set render_mode for video recording
+        render_mode = "rgb_array" if self._video else None
+        self._env = gym.make(self._task, cfg=env_cfg, render_mode=render_mode)
 
     def _prepare_eureka_environment(self, get_rewards_method_as_string: str):
         """Prepare the environment for training with the Eureka-generated reward function.
@@ -285,6 +303,21 @@ class TacrekaTaskManager:
             if agent_cfg.run_name:
                 log_dir += f"_{agent_cfg.run_name}"
             self._log_dir = os.path.join(log_root_path, log_dir)
+
+            # Wrap for video recording if enabled
+            if self._video:
+                import gymnasium as gym
+                video_kwargs = {
+                    "video_folder": os.path.join(self._log_dir, "videos", "train"),
+                    "step_trigger": lambda step: step % self._video_interval == 0,
+                    "video_length": self._video_length,
+                    "disable_logger": True,
+                }
+                print(f"[INFO] Recording videos during training.")
+                print(f"[INFO] Video folder: {video_kwargs['video_folder']}")
+                print(f"[INFO] Video interval: {self._video_interval} steps")
+                print(f"[INFO] Video length: {self._video_length} steps")
+                self._env = gym.wrappers.RecordVideo(self._env, **video_kwargs)
 
             env = RslRlVecEnvWrapper(self._env)
             runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=self._log_dir, device=agent_cfg.device)

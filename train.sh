@@ -26,20 +26,4 @@ export WANDB_MODE=offline
 
 export ISAAC_ACCEPT_EULA=YES
 
-# Load API credentials from a user-local secrets file.
-SECRETS_FILE="$HOME/.config/secrets/openai.env"
-if [ -f "$SECRETS_FILE" ]; then
-    . "$SECRETS_FILE"
-else
-    echo "[WARNING] Secrets file not found: $SECRETS_FILE"
-fi
-
-# Fail fast if neither native OpenAI nor Azure OpenAI credentials are configured.
-if [ -z "${OPENAI_API_KEY:-}" ] && { [ -z "${AZURE_OPENAI_API_KEY:-}" ] || [ -z "${AZURE_OPENAI_ENDPOINT:-}" ]; }; then
-    echo "[ERROR] Missing LLM API credentials."
-    echo "[ERROR] Set OPENAI_API_KEY, or set both AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT."
-    exit 1
-fi
-
-"$VENV_PYTHON" scripts/train.py --task=Isaac-Quadcopter-Direct-v0 --max_training_iterations=100 --rl_library="rsl_rl" --baseline="revolve_full" --max_eureka_iterations=30
-# "$VENV_PYTHON" scripts/train.py --task=Isaac-Cartpole-Direct-v0 --max_training_iterations=100 --rl_library=\"rsl_rl\" --baseline=\"revolve_full\"
+python scripts/train.py --task=Isaac-Quadcopter-Direct-v0 --max_training_iterations=100 --rl_library="rsl_rl"

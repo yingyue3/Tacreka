@@ -80,7 +80,7 @@ class LLMManager:
         self._feature_prompts.append({"role": "user", "content": user_prompt})
 
         # The official Eureka code only keeps the last round of feedback
-        if len(self._feature_prompts) == 4:
+        if len(self._feature_prompts) == 6:
             self._feature_prompts.pop(2)
             self._feature_prompts.pop(2)
         try:
@@ -161,7 +161,7 @@ class LLMManager:
         # The official Eureka code only keeps the last round of feedback
         if len(self._single_feature_reward_generation_prompts) == 6:
             self._single_feature_reward_generation_prompts.pop(2)
-            self._single_feature_reward_generation_prompts.pop(2)
+            # self._single_feature_reward_generation_prompts.pop(2)
 
         try:
             responses = self._client.chat.completions.create(
@@ -177,7 +177,7 @@ class LLMManager:
         reward_strings = [self.extract_code_from_response(raw_output) for raw_output in raw_outputs]
         # print("--------------------------------REWARD GENERATION PROMPTS--------------------------------")
         # print(self._single_feature_reward_generation_prompts)
-        print("--------------------------------REWARD STRINGS GENERATED--------------------------------")
+        # print("--------------------------------REWARD STRINGS GENERATED--------------------------------")
         # print(reward_strings)
         return {"reward_strings": reward_strings, "raw_outputs": raw_outputs}
     
