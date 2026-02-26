@@ -69,6 +69,7 @@ class EurekaTaskManager:
         env_seed: int = 42,
         max_training_iterations: int = 100,
         success_metric_string: str = "",
+        log_namespace: str = "eureka",
     ):
         """Initialize the task manager. Each process will create an independent training run.
 
@@ -80,6 +81,8 @@ class EurekaTaskManager:
             env_seed: The seed to use for the environment.
             max_training_iterations: The maximum number of training iterations.
             success_metric_string: A string that represents an expression to calculate the success metric for the task.
+            log_namespace: Suffix namespace for RL run logs under ``logs/rl_runs`` (for example: ``eureka``,
+                ``revolve_full``).
         """
         self._task = task
         self._rl_library = rl_library
@@ -88,6 +91,8 @@ class EurekaTaskManager:
         self._max_training_iterations = max_training_iterations
         self._success_metric_string = success_metric_string
         self._env_seed = env_seed
+        sanitized_namespace = str(log_namespace).strip().replace(" ", "_")
+        self._log_namespace = sanitized_namespace if sanitized_namespace else "eureka"
         if self._success_metric_string:
             self._success_metric_string = "extras['Eureka/success_metric'] = " + self._success_metric_string
 
@@ -277,7 +282,9 @@ class EurekaTaskManager:
             agent_cfg.device = self._device
             agent_cfg.max_iterations = self._max_training_iterations
 
-            log_root_path = os.path.join("logs", "rl_runs", "rsl_rl_eureka", agent_cfg.experiment_name)
+            log_root_path = os.path.join(
+                "logs", "rl_runs", f"rsl_rl_{self._log_namespace}", agent_cfg.experiment_name
+            )
             log_root_path = os.path.abspath(log_root_path)
             print(f"[INFO] Logging experiment in directory: {log_root_path}")
             # specify directory for logging runs: {time-stamp}_{run_name}
@@ -301,7 +308,9 @@ class EurekaTaskManager:
             agent_cfg["params"]["config"]["device"] = self._device
             agent_cfg["params"]["config"]["device_name"] = self._device
             # specify directory for logging experiments
-            log_root_path = os.path.join("logs", "rl_runs", "rl_games_eureka", agent_cfg["params"]["config"]["name"])
+            log_root_path = os.path.join(
+                "logs", "rl_runs", f"rl_games_{self._log_namespace}", agent_cfg["params"]["config"]["name"]
+            )
             log_root_path = os.path.abspath(log_root_path)
             print(f"[INFO] Logging experiment in directory: {log_root_path}")
             # specify directory for logging runs

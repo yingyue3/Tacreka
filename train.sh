@@ -1,14 +1,26 @@
-#!/bin/sh
-#SBATCH --account=def-mtaylor3
-#SBATCH --time=3:00:00
+#!/usr/bin/env bash
+#SBATCH --account=rrg-bengioy-ad_gpu
+#SBATCH --time=4:00:00
 #SBATCH --mem=20G
 #SBATCH --cpus-per-task=1
-#SBATCH --gpus-per-node=2
-#SBATCH --job-name=isaaclab-Isaac-Cartpole
+#SBATCH --gpus=h100:1
 
-module load StdEnv/2023
+set -euo pipefail
 
-source ~/llmr/bin/activate
+if command -v module >/dev/null 2>&1; then
+    if ! module load StdEnv/2023; then
+        echo "[WARNING] Failed to load StdEnv/2023 (possible transient CVMFS issue). Continuing with venv Python."
+    fi
+fi
+
+VENV_PYTHON="$HOME/llmr/bin/python"
+if [ ! -x "$VENV_PYTHON" ]; then
+    echo "[ERROR] Python not found in virtualenv: $VENV_PYTHON"
+    exit 1
+fi
+
+# Ensure local editable package path is importable even if env activation fails.
+export PYTHONPATH="$(pwd)/source/isaaclab_eureka${PYTHONPATH:+:$PYTHONPATH}"
 
 export WANDB_MODE=offline
 

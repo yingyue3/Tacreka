@@ -2,32 +2,99 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Script to train an RL agent with Isaac Lab Eureka."""
+"""Script to train an RL agent with Isaac Lab Eureka, Tacreka, or REvolve baselines."""
 
 import argparse
 import os
 
+from isaaclab_eureka import Eureka, Revolve, RevolveFull, Tacreka_SR
 from isaaclab_eureka.eureka import Eureka
 from isaaclab_eureka.tacreka_test_iterate import Tacreka_SR
 
-def main(args_cli):
-    eureka = Tacreka_SR(
-        task=args_cli.task,
-        rl_library=args_cli.rl_library,
-        num_parallel_runs=args_cli.num_parallel_runs,
-        device=args_cli.device,
-        env_seed=args_cli.env_seed,
-        max_training_iterations=args_cli.max_training_iterations,
-        feedback_subsampling=args_cli.feedback_subsampling,
-        temperature=args_cli.temperature,
-        gpt_model=args_cli.gpt_model,
-        use_wandb=args_cli.use_wandb,
-        wandb_project=args_cli.wandb_project,
-        wandb_entity=args_cli.wandb_entity,
-        wandb_name=args_cli.wandb_name,
-    )
 
-    eureka.run(max_eureka_iterations=args_cli.max_eureka_iterations)
+def main(args_cli):
+    if args_cli.baseline == "tacreka_sr":
+        tacreka = Tacreka_SR(
+            task=args_cli.task,
+            rl_library=args_cli.rl_library,
+            num_parallel_runs=args_cli.num_parallel_runs,
+            device=args_cli.device,
+            env_seed=args_cli.env_seed,
+            max_training_iterations=args_cli.max_training_iterations,
+            feedback_subsampling=args_cli.feedback_subsampling,
+            temperature=args_cli.temperature,
+            gpt_model=args_cli.gpt_model,
+            use_wandb=args_cli.use_wandb,
+            wandb_project=args_cli.wandb_project,
+            wandb_entity=args_cli.wandb_entity,
+            wandb_name=args_cli.wandb_name,
+        )
+        tacreka.run(max_eureka_iterations=args_cli.max_eureka_iterations)
+    elif args_cli.baseline == "revolve":
+        # Pairwise comparisons need an even number of suggestions; we derive pairs from requested runs.
+        num_pairs = max(1, args_cli.num_parallel_runs // 2)
+        if args_cli.num_parallel_runs % 2 != 0:
+            print(
+                f"[INFO]: REvolve requires an even number of suggestions. "
+                f"Using {num_pairs * 2} suggestions derived from {args_cli.num_parallel_runs} requested runs."
+            )
+        revolve = Revolve(
+            task=args_cli.task,
+            rl_library=args_cli.rl_library,
+            num_pairs=num_pairs,
+            device=args_cli.device,
+            env_seed=args_cli.env_seed,
+            max_training_iterations=args_cli.max_training_iterations,
+            feedback_subsampling=args_cli.feedback_subsampling,
+            temperature=args_cli.temperature,
+            gpt_model=args_cli.gpt_model,
+            use_wandb=args_cli.use_wandb,
+            wandb_project=args_cli.wandb_project,
+            wandb_entity=args_cli.wandb_entity,
+            wandb_name=args_cli.wandb_name,
+        )
+        revolve.run(max_revolve_iterations=args_cli.max_eureka_iterations)
+    elif args_cli.baseline == "revolve_full":
+        revolve_full = RevolveFull(
+            task=args_cli.task,
+            rl_library=args_cli.rl_library,
+            device=args_cli.device,
+            env_seed=args_cli.env_seed,
+            max_training_iterations=args_cli.max_training_iterations,
+            temperature=args_cli.temperature,
+            gpt_model=args_cli.gpt_model,
+            num_generations=args_cli.max_eureka_iterations,
+            individuals_per_generation=args_cli.revolve_individuals_per_generation,
+            num_islands=args_cli.revolve_num_islands,
+            max_island_size=args_cli.revolve_max_island_size,
+            crossover_prob=args_cli.revolve_crossover_prob,
+            migration_prob=args_cli.revolve_migration_prob,
+            temperature_final=args_cli.revolve_temperature_final,
+            use_human_feedback=args_cli.revolve_use_human_feedback,
+            human_feedback_dir=args_cli.revolve_hf_responses_dir,
+            use_wandb=args_cli.use_wandb,
+            wandb_project=args_cli.wandb_project,
+            wandb_entity=args_cli.wandb_entity,
+            wandb_name=args_cli.wandb_name,
+        )
+        revolve_full.run()
+    else:
+        eureka = Eureka(
+            task=args_cli.task,
+            rl_library=args_cli.rl_library,
+            num_parallel_runs=args_cli.num_parallel_runs,
+            device=args_cli.device,
+            env_seed=args_cli.env_seed,
+            max_training_iterations=args_cli.max_training_iterations,
+            feedback_subsampling=args_cli.feedback_subsampling,
+            temperature=args_cli.temperature,
+            gpt_model=args_cli.gpt_model,
+            use_wandb=args_cli.use_wandb,
+            wandb_project=args_cli.wandb_project,
+            wandb_entity=args_cli.wandb_entity,
+            wandb_name=args_cli.wandb_name,
+        )
+        eureka.run(max_eureka_iterations=args_cli.max_eureka_iterations)
 
 
 if __name__ == "__main__":
@@ -64,6 +131,60 @@ if __name__ == "__main__":
         default="rsl_rl",
         choices=["rsl_rl", "rl_games"],
         help="The RL training library to use.",
+    )
+    parser.add_argument(
+        "--baseline",
+        type=str,
+        default="tacreka_sr",
+        choices=["tacreka_sr", "eureka", "revolve", "revolve_full"],
+        help="Choose between Tacreka single-reward (default), Eureka, REvolve pairwise, or REvolve full baseline.",
+    )
+    parser.add_argument(
+        "--revolve_individuals_per_generation",
+        type=int,
+        default=6,
+        help="Number of individuals per generation for the REvolve full baseline.",
+    )
+    parser.add_argument(
+        "--revolve_num_islands",
+        type=int,
+        default=4,
+        help="Number of islands for the REvolve full baseline.",
+    )
+    parser.add_argument(
+        "--revolve_max_island_size",
+        type=int,
+        default=8,
+        help="Maximum island size for the REvolve full baseline.",
+    )
+    parser.add_argument(
+        "--revolve_crossover_prob",
+        type=float,
+        default=0.5,
+        help="Crossover probability for the REvolve full baseline.",
+    )
+    parser.add_argument(
+        "--revolve_migration_prob",
+        type=float,
+        default=0.3,
+        help="Migration probability for the REvolve full baseline.",
+    )
+    parser.add_argument(
+        "--revolve_temperature_final",
+        type=float,
+        default=1.0,
+        help="Final temperature for sampling in the REvolve full baseline.",
+    )
+    parser.add_argument(
+        "--revolve_use_human_feedback",
+        action="store_true",
+        help="Use human feedback (pairwise responses) to set fitness scores for REvolve full baseline.",
+    )
+    parser.add_argument(
+        "--revolve_hf_responses_dir",
+        type=str,
+        default=None,
+        help="Directory containing human feedback response CSVs organized by generation (e.g., generation_0/responses_*.csv).",
     )
     parser.add_argument(
         "--use_wandb",
