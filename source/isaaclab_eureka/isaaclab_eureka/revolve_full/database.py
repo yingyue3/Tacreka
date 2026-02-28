@@ -10,8 +10,37 @@ from isaaclab_eureka.revolve_full.entities import Island
 
 
 def normalized(x: List[float], temp: float = 1):
-    x = np.array(x)
-    return np.exp(x / temp) / np.sum(np.exp(x / temp), axis=0)
+    """Numerically stable probability normalization with safe fallbacks."""
+    values = np.asarray(x, dtype=np.float64)
+    if values.size == 0:
+        return values
+
+    if not np.isfinite(temp) or temp <= 0:
+        temp = 1.0
+
+    finite_mask = np.isfinite(values)
+    if not np.any(finite_mask):
+        return np.full(values.shape, 1.0 / values.size, dtype=np.float64)
+
+    finite_min = np.min(values[finite_mask])
+    values = np.where(finite_mask, values, finite_min)
+
+    # Stable softmax: subtract max to avoid overflow/underflow issues.
+    shifted = (values - np.max(values)) / temp
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        weights = np.exp(shifted)
+    weights = np.where(np.isfinite(weights), weights, 0.0)
+
+    total = float(np.sum(weights))
+    if not np.isfinite(total) or total <= 0.0:
+        return np.full(values.shape, 1.0 / values.size, dtype=np.float64)
+
+    probs = weights / total
+    probs = np.where(np.isfinite(probs), probs, 0.0)
+    prob_sum = float(np.sum(probs))
+    if not np.isfinite(prob_sum) or prob_sum <= 0.0:
+        return np.full(values.shape, 1.0 / values.size, dtype=np.float64)
+    return probs / prob_sum
 
 
 class RevolveDatabase:
@@ -193,13 +222,11 @@ class RevolveDatabase:
     def sample_in_context(
         self, num_samples: Dict, temperature: float
     ) -> Tuple[List[Tuple[str, float]], int, str]:
-        average_fitness_scores = normalized(
-            [
-                self._islands[island_id].average_fitness_score
-                for island_id in range(self.num_islands)
-            ],
-            temperature,
-        )
+        island_avg_scores = [
+            self._islands[island_id].average_fitness_score
+            for island_id in range(self.num_islands)
+        ]
+        average_fitness_scores = normalized(island_avg_scores, temperature)
 
         operator = "mutation" if random.random() >= self.crossover_prob else "crossover"
         num_in_context_samples = (
@@ -208,12 +235,33 @@ class RevolveDatabase:
             else num_samples["crossover"]
         )
 
-        size_of_sample_island = 0
-        while size_of_sample_island < num_in_context_samples:
-            sampled_island_id, sampled_island = random.choices(
-                list(enumerate(self._islands)), weights=average_fitness_scores
-            )[0]
-            size_of_sample_island = sampled_island.size
+        # Prefer islands that can satisfy requested sample count.
+        eligible_islands = [
+            (idx, island) for idx, island in enumerate(self._islands) if island.size >= num_in_context_samples
+        ]
+        if not eligible_islands:
+            # Relax to any non-empty island, and downsize requested context count if needed.
+            eligible_islands = [(idx, island) for idx, island in enumerate(self._islands) if island.size > 0]
+            if not eligible_islands:
+                logging.warning(
+                    "No non-empty islands available for in-context sampling; returning no examples from island 0."
+                )
+                return [], 0, "mutation"
+            num_in_context_samples = min(num_in_context_samples, max(island.size for _, island in eligible_islands))
+
+        eligible_ids = [idx for idx, _ in eligible_islands]
+        eligible_weights = normalized([island_avg_scores[idx] for idx in eligible_ids], temperature)
+        sampled_eligible_idx = random.choices(range(len(eligible_islands)), weights=eligible_weights)[0]
+        sampled_island_id, sampled_island = eligible_islands[sampled_eligible_idx]
+
+        if sampled_island.size == 0 or num_in_context_samples <= 0:
+            logging.warning(
+                "Sampled island %d has no individuals for in-context sampling; returning empty sample list.",
+                sampled_island_id,
+            )
+            return [], sampled_island_id, operator
+
+        num_in_context_samples = min(num_in_context_samples, sampled_island.size)
         in_context_sample_ids = np.random.choice(
             range(sampled_island.size),
             p=normalized(sampled_island.fitness_scores, temperature),
