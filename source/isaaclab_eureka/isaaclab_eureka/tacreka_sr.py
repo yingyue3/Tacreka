@@ -103,7 +103,7 @@ class Tacreka_SR:
             device=device,
             env_seed=env_seed,
             rl_library=rl_library,
-            num_processes=self._num_parallel_runs,
+            num_processes=self._num_parallel_runs * self._num_processes,
             max_training_iterations=max_training_iterations,
             success_metric_string=success_metric_string,
         )
@@ -216,8 +216,10 @@ class Tacreka_SR:
 
             # Train the RL agent
             results = []
+            reward_strings = []
             for llm_output in llm_outputs:
-                results += self._task_manager.train(llm_output["reward_strings"])
+                reward_strings += llm_output["reward_strings"]
+            results = self._task_manager.train(reward_strings)
             # Give TensorBoard time to flush logs before reading them
             import time
             time.sleep(1.0)  # Wait 1 second for TensorBoard to flush

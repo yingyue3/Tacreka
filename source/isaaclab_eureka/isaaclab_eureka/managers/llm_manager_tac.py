@@ -9,7 +9,7 @@ import json
 import openai
 
 
-class LLMManager:
+class LLMManagerTac:
     """Manager to interface with the LLM API.
 
     This class is responsible for interfacing with the LLM API to generate rewards.
@@ -20,7 +20,7 @@ class LLMManager:
     - For the Azure OpenAI API, the environment variables AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY must be set.
     """
 
-    def __init__(self, gpt_model: str, num_suggestions: int, temperature: float, system_prompt: str, feature_prompt: str = None):
+    def __init__(self, gpt_model: str, temperature: float, system_prompt: str, feature_prompt: str = None):
         """Initialize the LLMManager
 
         Args:
@@ -31,7 +31,6 @@ class LLMManager:
         """
 
         self._gpt_model = gpt_model
-        self._num_suggestions = num_suggestions
         self._temperature = temperature
         self._prompts = [{"role": "system", "content": system_prompt}]
         self._feature_prompts = [{"role": "system", "content": feature_prompt}]
@@ -66,7 +65,7 @@ class LLMManager:
         features = feature_dic["features"]
         return features
 
-    def feature_gen(self, user_prompt: str, assistant_prompt: str = None) -> list[str]:
+    def feature_gen(self, user_prompt: str, assistant_prompt: str = None, num_suggestion: int = 1) -> list[str]:
         """Call the LLM API to generate features
 
         Args:
@@ -80,18 +79,18 @@ class LLMManager:
         self._feature_prompts.append({"role": "user", "content": user_prompt})
 
 
-        schema =  {
-            'format': {
-                'type': 'json_schema',
-                'name': 'screen',
-                'strict': True,
-                'schema': {
-                    'type': 'object',
-                    'properties': {
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "feature_list",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
                         "features": {
                             "type": "array",
-                            "minItems": 3,
-                            "maxItems": 6,
+                            "minItems": 1,
+                            "maxItems": 4,
                             "items": {
                                 "type": "object",
                                 "additionalProperties": False,
@@ -100,53 +99,48 @@ class LLMManager:
                                     "intent",
                                     "measurable_signals",
                                     "proxy_metric",
+                                    "weight",
                                     "desired_direction",
                                     "typical_failure_mode",
                                 ],
-                            },
-                            "properties": {
-                                "feature_name": {
-                                    "description": "Name of the feature that is measurable from the given observations/actions.",
-                                    "type": "string",
-                                    "minLength": 3,
-                                    "maxLength": 100
-                                },
-                                "intent": {
-                                    "description": "Intent of the feature. Explain the intent of the feature in one sentence.",
-                                    "type": "string",
-                                    "minLength": 3,
-                                    "maxLength": 100
-                                },
-                                "measurable_signals": {
-                                    "description": "Signals that can be used to measure the feature.",
-                                    "type": "array",
-                                    "items": {
+                                "properties": {
+                                    "feature_name": {
+                                        "description": "Name of the feature that is measurable from the given observations/actions.",
                                         "type": "string",
                                     },
-                                    "minItems": 1,
-                                    "maxItems": 10,
-                                },
-                                "proxy_metric": {
-                                    "description": "Proxy metric for the feature. Explain the proxy metric for the feature in one sentence.",
-                                    "type": "string",
-                                    "minLength": 3,
-                                    "maxLength": 100
-                                },
-                                "desired_direction": {
-                                    "description": "Desired direction of the feature. Explain the desired direction of the feature in one sentence.",
-                                    "type": "string",
-                                    "minLength": 3,
-                                    "maxLength": 100
-                                },
-                                "typical_failure_mode": {
-                                    "description": "Typical failure mode of the feature. Explain the typical failure mode of the feature in one sentence.",
-                                    "type": "string",
-                                    "minLength": 3,
-                                    "maxLength": 100
+                                    "intent": {
+                                        "description": "Intent of the feature. Explain the intent of the feature in one sentence.",
+                                        "type": "string",
+                                    },
+                                    "measurable_signals": {
+                                        "description": "Signals that can be used to measure the feature.",
+                                        "type": "array",
+                                        "items": {
+                                            "type": "string",
+                                        },
+                                    },
+                                    "proxy_metric": {
+                                        "description": "Proxy metric for the feature. Explain the proxy metric for the feature in one sentence.",
+                                        "type": "string",
+                                    },
+                                    "weight": {
+                                        "description": "Weight of the feature. The weight of the feature in the final reward function.",
+                                        "type": "number",
+                                    },
+                                    "desired_direction": {
+                                        "description": "Desired direction of the feature. Explain the desired direction of the feature in one sentence.",
+                                        "type": "string",
+                                    },
+                                    "typical_failure_mode": {
+                                        "description": "Typical failure mode of the feature. Explain the typical failure mode of the feature in one sentence.",
+                                        "type": "string",
+                                    },
                                 },
                             },
                         }
-                    }
+                    },
+                    "required": ["features"],
+                    "additionalProperties": False,
                 }
             }
         }
@@ -160,7 +154,8 @@ class LLMManager:
                 model=self._gpt_model,
                 messages=self._feature_prompts,
                 temperature=self._temperature,
-                n=self._num_suggestions,
+                n=num_suggestion,
+                response_format=response_format,
             )
         except Exception as e:
             raise RuntimeError("An error occurred while prompting the LLM") from e

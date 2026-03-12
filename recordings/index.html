@@ -1,0 +1,275 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Human Feedback - Video Selection</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Arial, sans-serif; 
+            background: linear-gradient(135deg, #0f0f23 0%, #1a1a3e 50%, #0f0f23 100%); 
+            color: #e0e0e0; 
+            padding: 20px;
+            min-height: 100vh;
+            margin: 0;
+        }
+        h1 { 
+            text-align: center; 
+            color: #4cc9f0; 
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            text-align: center;
+            color: #888;
+            margin-bottom: 30px;
+        }
+        .task-info {
+            background: rgba(76, 201, 240, 0.1);
+            border-left: 4px solid #4cc9f0;
+            padding: 15px 20px;
+            margin: 20px auto;
+            max-width: 800px;
+            border-radius: 0 10px 10px 0;
+        }
+        .task-info h2 {
+            color: #4cc9f0;
+            margin-top: 0;
+        }
+        .container { 
+            display: flex; 
+            flex-wrap: wrap; 
+            justify-content: center; 
+            gap: 30px; 
+            padding: 20px;
+        }
+        .video-card { 
+            background: rgba(255,255,255,0.05); 
+            padding: 20px; 
+            border-radius: 15px;
+            text-align: center;
+            border: 2px solid transparent;
+            transition: all 0.3s ease;
+            max-width: 500px;
+        }
+        .video-card:hover {
+            border-color: #4cc9f0;
+            transform: translateY(-5px);
+        }
+        .video-card.selected {
+            border-color: #4ade80;
+            background: rgba(74, 222, 128, 0.1);
+        }
+        .video-card h3 {
+            color: #fff;
+            margin-top: 0;
+        }
+        video { 
+            width: 100%;
+            max-width: 450px;
+            border-radius: 10px; 
+            margin: 10px 0;
+            background: #000;
+        }
+        .select-btn { 
+            background: linear-gradient(135deg, #4cc9f0 0%, #3b82f6 100%);
+            border: none; 
+            padding: 15px 40px; 
+            font-size: 16px;
+            font-weight: bold;
+            border-radius: 8px; 
+            cursor: pointer;
+            transition: all 0.3s;
+            color: white;
+        }
+        .select-btn:hover { 
+            transform: scale(1.05);
+            box-shadow: 0 5px 20px rgba(76, 201, 240, 0.4);
+        }
+        .feedback-section, .rating-section {
+            max-width: 600px;
+            margin: 30px auto;
+            text-align: center;
+        }
+        textarea {
+            width: 100%;
+            height: 100px;
+            padding: 15px;
+            border-radius: 10px;
+            border: 2px solid #333;
+            background: rgba(255,255,255,0.05);
+            color: white;
+            font-size: 14px;
+            resize: vertical;
+        }
+        textarea:focus {
+            outline: none;
+            border-color: #4cc9f0;
+        }
+        input[type="range"] {
+            width: 200px;
+            margin: 10px;
+        }
+        #rating-value {
+            font-size: 1.5em;
+            color: #4cc9f0;
+        }
+        .submit-section {
+            text-align: center;
+            margin: 30px 0;
+        }
+        .submit-btn {
+            background: linear-gradient(135deg, #4ade80 0%, #22c55e 100%);
+            border: none;
+            padding: 20px 60px;
+            font-size: 20px;
+            font-weight: bold;
+            border-radius: 10px;
+            cursor: pointer;
+            color: white;
+            transition: all 0.3s;
+        }
+        .submit-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 5px 20px rgba(74, 222, 128, 0.4);
+        }
+        .submit-btn:disabled {
+            background: #555;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        .success-message {
+            display: none;
+            text-align: center;
+            padding: 40px;
+            background: rgba(74, 222, 128, 0.1);
+            border-radius: 15px;
+            margin: 30px auto;
+            max-width: 500px;
+        }
+        .success-message h2 {
+            color: #4ade80;
+            font-size: 2em;
+        }
+        .checkmark {
+            font-size: 4em;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Human Feedback Required</h1>
+    <p class="subtitle">Watch the videos and select your preferred option</p>
+    
+    
+            <div class="task-info">
+                <h2>Task Description</h2>
+                <p>Quadcopter hover task</p>
+            </div>
+            
+    
+    <div class="container" id="video-container">
+        
+            <div class="video-card" id="card-0">
+                <h3>Reward v1</h3>
+                <video controls preload="metadata">
+                    <source src="quad_tac_71.mp4" type="video/mp4">
+                    Your browser does not support video.
+                </video>
+                <button class="select-btn" onclick="selectVideo(0)">
+                    Select This One
+                </button>
+            </div>
+            
+            <div class="video-card" id="card-1">
+                <h3>Reward v2</h3>
+                <video controls preload="metadata">
+                    <source src="quad_tac_85.mp4" type="video/mp4">
+                    Your browser does not support video.
+                </video>
+                <button class="select-btn" onclick="selectVideo(1)">
+                    Select This One
+                </button>
+            </div>
+            
+    </div>
+    
+    
+            <div class="feedback-section">
+                <h3>Additional Feedback (Optional)</h3>
+                <textarea id="feedback" placeholder="What did you like or dislike? Any suggestions?"></textarea>
+            </div>
+            
+    
+            <div class="rating-section">
+                <h3>Overall Rating</h3>
+                <input type="range" id="rating" min="1" max="10" value="5">
+                <span id="rating-value">5</span>/10
+            </div>
+            
+    
+    <div class="submit-section" id="submit-section">
+        <button class="submit-btn" id="submit-btn" onclick="submitFeedback()" disabled>
+            Submit Selection
+        </button>
+        <p id="selection-hint" style="color: #888;">Please select a video first</p>
+    </div>
+    
+    <div class="success-message" id="success-message">
+        <div class="checkmark">✓</div>
+        <h2>Thank You!</h2>
+        <p>Your feedback has been recorded.</p>
+        <p>You can close this window now.</p>
+    </div>
+    
+    <script>
+        let selectedIndex = -1;
+        
+        function selectVideo(index) {
+            selectedIndex = index;
+            
+            // Update card styles
+            document.querySelectorAll('.video-card').forEach((card, i) => {
+                card.classList.toggle('selected', i === index);
+            });
+            
+            // Enable submit button
+            document.getElementById('submit-btn').disabled = false;
+            document.getElementById('selection-hint').textContent = 
+                'Option ' + (index + 1) + ' selected';
+            document.getElementById('selection-hint').style.color = '#4ade80';
+        }
+        
+        document.getElementById('rating').addEventListener('input', function() { document.getElementById('rating-value').textContent = this.value; });
+        
+        function submitFeedback() {
+            if (selectedIndex < 0) return;
+            
+            const data = {
+                selection: selectedIndex,
+                feedback: document.getElementById('feedback').value,
+                rating: parseInt(document.getElementById('rating').value),
+            };
+            
+            fetch('/submit', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            }).then(response => {
+                if (response.ok) {
+                    document.getElementById('video-container').style.display = 'none';
+                    document.getElementById('submit-section').style.display = 'none';
+                    document.querySelectorAll('.feedback-section, .rating-section').forEach(
+                        el => el.style.display = 'none'
+                    );
+                    document.getElementById('success-message').style.display = 'block';
+                }
+            });
+        }
+    </script>
+</body>
+</html>
+        
