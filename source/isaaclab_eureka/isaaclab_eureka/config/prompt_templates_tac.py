@@ -129,9 +129,9 @@ Please analyze each existing reward component in the suggested manner above firs
 """ + FEATURE_GEN_FORMATTING_PROMPT
 
 FEATURE_GEN_EXPLOIT_FEEDBACK_PROMPT = """
-Please carefully analyze the policy feedback and provide a new reward feature decomposition that set the training results to as close as possible to the desired task score. The new reward feature decomposition should have at least one feature with reduced weights or discarding one of the existing feature.
+Please carefully analyze the policy feedback and provide a new reward feature decomposition that set the training results to as close as possible to the desired task score. The new reward feature decomposition should have at least one feature with changed weights or discarding one of the existing feature.
 Some helpful tips for analyzing the policy feedback:
-    (1) If the success rates are always near zero, then you must consider dropping some of the existing reward feature decomposition component.
+    (1) If the success rates are always near zero, then you must consider dropping some of the unhelpful reward feature decomposition component.
     (2) If the values for a certain reward component are near identical throughout, then this means RL is not able to optimize this component as it is written. You may consider
         (a) Changing its scale or the value of its temperature parameter
         (b) Discarding the reward feature

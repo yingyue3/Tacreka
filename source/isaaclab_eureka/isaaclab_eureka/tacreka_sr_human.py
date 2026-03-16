@@ -33,7 +33,7 @@ from isaaclab_eureka.config import (
     FEATURE_AS_ONE_SUCCESS_PRE_FEEDBACK_PROMPT,
     TASK_SUCCESS_PRE_FEEDBACK_PROMPT
 )
-from isaaclab_eureka.managers import EurekaTaskManager, LLMManagerTac
+from isaaclab_eureka.managers import EurekaTaskManager, LLMManagerTac, RecordManagerQuad
 from isaaclab_eureka.utils import load_tensorboard_logs
 
 
@@ -55,7 +55,7 @@ class Tacreka_SR:
         wandb_project: str = "isaaclab-eureka",
         wandb_entity: str = None,
         wandb_name: str = None,
-        human_feedback: bool = False,
+        human_feedback: bool = True,
     ):
         """Initialize the Eureka class.
 
@@ -112,6 +112,15 @@ class Tacreka_SR:
             num_processes=self._num_parallel_runs,
             max_training_iterations=max_training_iterations,
             success_metric_string=success_metric_string,
+        )
+
+        print("[INFO]: Setting up the Record Manager...")
+        self._record_manager = RecordManagerQuad(
+            task=task,
+            num_envs=1,
+            device=device,
+            max_frames=900,
+            num_episodes=1,
         )
 
         # Logging
@@ -263,7 +272,7 @@ class Tacreka_SR:
                     # Compute the performance metrics
                     print("Successfully generated reward function, generating task feedback")
                     print(f"result['log_dir']: {result['log_dir']}")
-                    eureka_task_feedback, success_metric_max, rewards_correlation = self._get_eureka_task_feedback(
+                    eureka_task_feedback, success_metric_max, rewards_correlation, oracle_reward = self._get_eureka_task_feedback(
                         result["log_dir"], self._feedback_subsampling
                     )
 
@@ -279,63 +288,40 @@ class Tacreka_SR:
                     # Store the results
                     results[idx]["eureka_task_feedback"] = eureka_task_feedback
                     results[idx]["success_metric_max"] = success_metric_max
-                    results[idx]["rewards_correlation"] = rewards_correlation
+                    results[idx]["reward_correlation"] = rewards_correlation
+                    results[idx]["oracle_reward"] = oracle_reward
                     feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
                     # print(f"feature_idx: {feature_idx}")
                     results[idx]["reward_components"] = feature_gen_outputs["raw_outputs"][feature_idx]
                     # Check the best performing metric, determined by the minimum distance from the win target
-                    if success_metric_max is not None and (
-                        iter_best_success_metric is None
-                        or np.abs(success_metric_max - self._success_metric_to_win)
-                        < np.abs(iter_best_success_metric - self._success_metric_to_win)
-                    ):
-                        # Store the best run for this iteration
-                        iter_best_success_metric = success_metric_max
-                        best_run_idx = idx
-
-                        # Store the best metric across all iterations
-                        if best_run_results["success_metric"] is None or (
-                            np.abs(iter_best_success_metric - self._success_metric_to_win)
-                            < np.abs(best_run_results["success_metric"] - self._success_metric_to_win)
-                        ):
-                            best_run_results["success_metric"] = iter_best_success_metric
-                            best_run_results["gpt_reward_method"] = gpt_reward_method_strings[idx]["reward_strings"]
-                            best_run_results["feature_idx"] = gpt_reward_method_strings[idx]["feature_idx"]
-                            best_run_results["task_feedback"] = eureka_task_feedback
-                            best_run_results["rewards_correlation"] = rewards_correlation
-                            print("logging best metric to wandb")
-                            # Log best metric to wandb
-                            if self._use_wandb and self._wandb:
-                                self._wandb.log({
-                                    "best/overall_success_metric": iter_best_success_metric,
-                                    "best/iteration": iter,
-                                    "best/run_idx": idx,
-                                }, step=iter)
-                    if self._human_feedback and success_metric_max is not None:
-                        if best_run_success_metric is None:
+                    if success_metric_max is not None:
+                        if iter_best_success_metric is None:
+                            iter_best_success_metric = success_metric_max
+                            best_run_idx = idx
                             print("No best reward components found, setting current run as best")
                             best_reward_components = idx
+                            best_run_orcale_reward = oracle_reward
                             best_run_reward_correlation = rewards_correlation
                             best_run_success_metric = success_metric_max
                             best_run_task_feedback = eureka_task_feedback
                             best_run_feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
                             best_run_feature_components = feature_gen_outputs["raw_outputs"][best_run_feature_idx]
-                            # iter_best_success_metric = success_metric_max
-                            best_reward_components = idx
+                            best_run_checkpoint = result["log_dir"] + "/model_99.pt"
+                            self._record_manager.record(checkpoint=best_run_checkpoint, output_file="./recordings/best_run_quad.mp4")
                         else:
                             print("Human feedback is enabled, skipping best metric check")
                             print("Please provide feedback for the current run")
                             print("1. Press 1 if the run 1 is preferred")
                             print("2. Press 2 if the run 2 is preferred")
                             print("+"*10 + " Run 1 " + "+"*10)
-                            print(f"reward correlation: {rewards_correlation}")
+                            print(f"oracle reward: {oracle_reward}")
                             print(f"success metric: {success_metric_max}")
                             print(f"task feedback: {eureka_task_feedback}")
                             feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
                             print("++++++ feature components ++++++") 
                             print(feature_gen_outputs["raw_outputs"][feature_idx])
                             print("+"*10 + " Run 2 " + "+"*10)
-                            print(f"reward correlation: {best_run_reward_correlation}")
+                            print(f"oracle reward: {best_run_orcale_reward}")
                             print(f"success metric: {best_run_success_metric}")
                             print(f"task feedback: {best_run_task_feedback}")
                             feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
@@ -344,16 +330,37 @@ class Tacreka_SR:
                             feedback = input("Enter your feedback: ")
                             if feedback == "1":
                                 best_reward_components = idx
-                                best_run_reward_correlation = rewards_correlation
+                                # best_run_reward_correlation = rewards_correlation
                                 best_run_success_metric = success_metric_max
                                 best_run_task_feedback = eureka_task_feedback
                                 best_run_feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
                                 best_run_feature_components = feature_gen_outputs["raw_outputs"][best_run_feature_idx]
                                 # iter_best_success_metric = success_metric_max
-                    else:
-                        print("Human feedback is disabled, skipping best metric check")
-                        best_reward_components = best_run_idx
+                            print("Best reward components updated")
+                            print("Now Please provide feedback for the best reward function")
+                            self._record_manager.record(checkpoint=result["log_dir"] + "/model_99.pt", output_file=f"./recordings/new_run_quad.mp4")
+                            print("1. Press 1 if the new run is preferred")
+                            print("2. Press 2 if the best run is preferred")
+                            input_feedback = input("Enter your feedback: ")
+                            if input_feedback == "1":
+                                iter_best_success_metric = success_metric_max
+                                best_run_idx = idx
+                                os.rename("./recordings/new_run_quad.mp4", "./recordings/best_run_quad.mp4")
+                                print("Best run updated")
 
+
+
+                        if best_run_results["success_metric"] is None or (
+                        np.abs(iter_best_success_metric - self._success_metric_to_win)
+                        < np.abs(best_run_results["success_metric"] - self._success_metric_to_win)
+                        ):
+                                best_run_results["success_metric"] = iter_best_success_metric
+                                best_run_results["oracle_reward"] = oracle_reward
+                                best_run_results["reward_correlation"] = rewards_correlation
+                                best_run_results["task_feedback"] = eureka_task_feedback
+                                best_run_results["feature_idx"] = gpt_reward_method_strings[idx]["feature_idx"]
+                                best_run_results["feature_components"] = feature_gen_outputs["raw_outputs"][best_run_feature_idx]
+                                print("logging best metric")
                         
                 # Add the prompts
                 feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
@@ -381,6 +388,7 @@ class Tacreka_SR:
         self._log_final_results(best_run_results)
         # Close the task manager
         self._task_manager.close()
+        self._record_manager.close()
 
     def _get_eureka_task_feedback(self, log_dir: str, feedback_subsampling: int) -> tuple[str, float, float]:
         """Get the feedback for the Eureka task.
@@ -449,7 +457,7 @@ class Tacreka_SR:
                 total_feed_back_string += feedback_string
 
         total_feed_back_string += f"\nThe desired task_score to win is: {self._success_metric_to_win:.2f}\n"
-        return total_feed_back_string, success_metric_max, rewards_correlation
+        return total_feed_back_string, success_metric_max, rewards_correlation, oracle_rewards[-1]
 
     def _log_iteration_results(self, iter: int, results: list):
         """Log the results of the iteration."""

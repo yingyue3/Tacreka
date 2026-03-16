@@ -6,3 +6,4 @@ from .eureka_task_manager import EurekaTaskManager
 from .llm_manager import LLMManager
 from .tacreka_task_manager import TacrekaTaskManager
 from .llm_manager_tac import LLMManagerTac
+from .record_manager_quad import RecordManagerQuad

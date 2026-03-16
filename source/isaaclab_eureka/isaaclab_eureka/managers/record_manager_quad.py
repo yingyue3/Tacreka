@@ -21,8 +21,14 @@ from PIL import Image, ImageDraw
 
 from isaaclab_eureka.utils import get_freest_gpu
 
+# import gymnasium as gym
+# import isaaclab_tasks  # noqa: F401
+# from isaaclab.envs import DirectRLEnvCfg
+# from isaaclab_tasks.utils import parse_env_cfg
+# from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
 
-class RecordManagerQuadcopter:
+
+class RecordManagerQuad:
     """Manager for recording quadcopter policy rollouts with fallback 2D rendering."""
 
     def __init__(
@@ -32,7 +38,7 @@ class RecordManagerQuadcopter:
         device: str = "cuda",
         rl_library: str = "rsl_rl",
         headless: bool = True,
-        output_file: str = "./recordings/quadcopter_fallback.mp4",
+        # output_file: str = "./recordings/quadcopter_fallback.mp4",
         fps: int = 30,
         max_frames: int = 900,
         num_episodes: int = 1,
@@ -65,7 +71,7 @@ class RecordManagerQuadcopter:
         self.device = device
         self.rl_library = rl_library
         self.headless = headless
-        self.output_file = output_file
+        # self.output_file = output_file
         self.fps = fps
         self.max_frames = max_frames
         self.num_episodes = num_episodes
@@ -82,6 +88,33 @@ class RecordManagerQuadcopter:
         self._trail_xz: list[tuple[float, float]] = []
         self._fallback_state = {"pseudo_pos": np.zeros(3, dtype=float)}
         self._step_dt = 0.01
+
+        import torch
+
+        from isaaclab.app import AppLauncher
+
+        device = self.device
+        if device == "cuda":
+            device_id = get_freest_gpu()
+            device = f"cuda:{device_id}"
+
+        app_launcher = AppLauncher(headless=self.headless, device=device)
+        simulation_app = app_launcher.app
+        self.simulation_app = simulation_app
+
+        import gymnasium as gym
+
+        import isaaclab_tasks  # noqa: F401
+        from isaaclab.envs import DirectRLEnvCfg
+        from isaaclab_tasks.utils import parse_env_cfg
+        from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
+
+        env_cfg: DirectRLEnvCfg = parse_env_cfg(self.task)
+        env_cfg.sim.device = device
+        env_cfg.scene.num_envs = self.num_envs if self.num_envs is not None else 1
+        self.env_cfg = env_cfg
+        self.env = gym.make(self.task, cfg=env_cfg)
+
 
     @staticmethod
     def _extract_policy_obs(obs):
@@ -325,19 +358,9 @@ class RecordManagerQuadcopter:
             return True
         return False
 
-    def record(self):
+    def record(self, output_file: str, checkpoint: str):
         """Run policy rollout and record video."""
         import torch
-
-        from isaaclab.app import AppLauncher
-
-        device = self.device
-        if device == "cuda":
-            device_id = get_freest_gpu()
-            device = f"cuda:{device_id}"
-
-        app_launcher = AppLauncher(headless=self.headless, device=device)
-        simulation_app = app_launcher.app
 
         import gymnasium as gym
 
@@ -346,44 +369,43 @@ class RecordManagerQuadcopter:
         from isaaclab_tasks.utils import parse_env_cfg
         from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
 
-        env_cfg: DirectRLEnvCfg = parse_env_cfg(self.task)
-        env_cfg.sim.device = device
-        env_cfg.scene.num_envs = self.num_envs if self.num_envs is not None else 1
-        env = gym.make(self.task, cfg=env_cfg)
-
-        os.makedirs(os.path.dirname(self.output_file) or ".", exist_ok=True)
-        writer = imageio.get_writer(self.output_file, fps=self.fps)
+        os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
+        writer = imageio.get_writer(output_file, fps=self.fps)
 
         active_env_idx = max(0, self.env_index)
         self._frame_idx = 0
         self._episode_idx = 0
         self._episode_step = 0
-        self._step_dt = float(getattr(env_cfg.sim, "dt", 0.01)) * float(
-            getattr(env_cfg, "decimation", 1)
+        self._step_dt = float(getattr(self.env_cfg.sim, "dt", 0.01)) * float(
+            getattr(self.env_cfg, "decimation", 1)
         )
         self._yaw_est = 0.0
         self._trail_xy = []
         self._trail_xz = []
         self._fallback_state = {"pseudo_pos": np.zeros(3, dtype=float)}
 
-        print(f"[INFO] Device: {device}")
+        print(f"[INFO] Device: {self.device}")
         print(f"[INFO] Task: {self.task}")
-        print(f"[INFO] Output video: {self.output_file}")
-        print(f"[INFO] Num envs: {env_cfg.scene.num_envs}")
+        print(f"[INFO] Output video: {output_file}")
+        print(f"[INFO] Num envs: {self.env_cfg.scene.num_envs}")
 
         try:
             if self.rl_library == "rsl_rl":
-                self._record_rsl_rl(env, device, simulation_app, writer, active_env_idx, load_cfg_from_registry, torch)
+                self._record_rsl_rl(self.env, self.device, self.simulation_app, writer, active_env_idx, load_cfg_from_registry, torch, checkpoint)
             elif self.rl_library == "rl_games":
-                self._record_rl_games(env, device, simulation_app, writer, active_env_idx, load_cfg_from_registry, torch)
+                self._record_rl_games(self.env, self.device, self.simulation_app, writer, active_env_idx, load_cfg_from_registry, torch, checkpoint)
             else:
                 raise ValueError(f"Unsupported rl_library: {self.rl_library}")
         finally:
             writer.close()
-            env.close()
-            simulation_app.close()
+            self.env.close()
             print(f"[INFO] Fallback recording complete. Frames: {self._frame_idx}")
-            print(f"[INFO] Saved video: {self.output_file}")
+            print(f"[INFO] Saved video: {output_file}")
+
+    def close(self):
+        """Close the environment and simulation app."""
+        # self.env.close()
+        self.simulation_app.close()
 
     def _record_rsl_rl(self, env, device, simulation_app, writer, active_env_idx, load_cfg_from_registry, torch, checkpoint):
         """Record using RSL-RL library."""
@@ -541,13 +563,3 @@ class RecordManagerQuadcopter:
 
             if self._should_stop():
                 break
-
-recorder = RecordManagerQuadcopter(
-    task="Isaac-Quadcopter-Direct-v0",
-    num_envs=1,
-    device="cuda",
-    output_file="./recordings/quadcopter.mp4",
-    max_frames=900,
-    num_episodes=1,
-)
-recorder.record(checkpoint="/home/yingyue/scratch/Tacreka/logs/rl_runs/rsl_rl_eureka/quadcopter_direct/2026-03-02_17-46-12_Run-1/model_199.pt")
