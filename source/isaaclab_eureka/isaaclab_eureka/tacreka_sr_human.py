@@ -292,7 +292,7 @@ class Tacreka_SR:
                     results[idx]["oracle_reward"] = oracle_reward
                     feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
                     # print(f"feature_idx: {feature_idx}")
-                    results[idx]["reward_components"] = feature_gen_outputs["raw_outputs"][feature_idx]
+                    results[idx]["reward_components"] = feature_gen_outputs["feature_strings"][feature_idx]
                     # Check the best performing metric, determined by the minimum distance from the win target
                     if success_metric_max is not None:
                         if iter_best_success_metric is None:
@@ -305,9 +305,9 @@ class Tacreka_SR:
                             best_run_success_metric = success_metric_max
                             best_run_task_feedback = eureka_task_feedback
                             best_run_feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
-                            best_run_feature_components = feature_gen_outputs["raw_outputs"][best_run_feature_idx]
+                            best_run_feature_components = feature_gen_outputs["feature_strings"][best_run_feature_idx]
                             best_run_checkpoint = result["log_dir"] + "/model_99.pt"
-                            self._record_manager.record(checkpoint=best_run_checkpoint, output_file="./recordings/best_run_quad.mp4")
+                            self._record_manager.record(checkpoint=best_run_checkpoint, output_file="./ratings/best_run_quad.mp4")
                         else:
                             print("Human feedback is enabled, skipping best metric check")
                             print("Please provide feedback for the current run")
@@ -319,14 +319,15 @@ class Tacreka_SR:
                             print(f"task feedback: {eureka_task_feedback}")
                             feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
                             print("++++++ feature components ++++++") 
-                            print(feature_gen_outputs["raw_outputs"][feature_idx])
+                            feature_components = feature_gen_outputs["feature_strings"][feature_idx]
+                            print(json.dumps(feature_components, indent=2, default=str))
                             print("+"*10 + " Run 2 " + "+"*10)
                             print(f"oracle reward: {best_run_orcale_reward}")
                             print(f"success metric: {best_run_success_metric}")
                             print(f"task feedback: {best_run_task_feedback}")
                             feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
                             print("++++++ feature components ++++++") 
-                            print(best_run_feature_components)
+                            print(json.dumps(best_run_feature_components, indent=2, default=str))
                             feedback = input("Enter your feedback: ")
                             if feedback == "1":
                                 best_reward_components = idx
@@ -338,14 +339,14 @@ class Tacreka_SR:
                                 # iter_best_success_metric = success_metric_max
                             print("Best reward components updated")
                             print("Now Please provide feedback for the best reward function")
-                            self._record_manager.record(checkpoint=result["log_dir"] + "/model_99.pt", output_file=f"./recordings/new_run_quad.mp4")
+                            self._record_manager.record(checkpoint=result["log_dir"] + "/model_99.pt", output_file=f"./ratings/new_run_quad.mp4")
                             print("1. Press 1 if the new run is preferred")
                             print("2. Press 2 if the best run is preferred")
                             input_feedback = input("Enter your feedback: ")
                             if input_feedback == "1":
                                 iter_best_success_metric = success_metric_max
                                 best_run_idx = idx
-                                os.rename("./recordings/new_run_quad.mp4", "./recordings/best_run_quad.mp4")
+                                os.rename("./ratings/new_run_quad.mp4", "./ratings/best_run_quad.mp4")
                                 print("Best run updated")
 
 
@@ -360,6 +361,7 @@ class Tacreka_SR:
                                 best_run_results["task_feedback"] = eureka_task_feedback
                                 best_run_results["feature_idx"] = gpt_reward_method_strings[idx]["feature_idx"]
                                 best_run_results["feature_components"] = feature_gen_outputs["raw_outputs"][best_run_feature_idx]
+                                best_run_results["gpt_reward_method"] = gpt_reward_method_strings[idx]["reward_strings"]
                                 print("logging best metric")
                         
                 # Add the prompts
@@ -465,7 +467,7 @@ class Tacreka_SR:
             print(f"{'*' * 20} Iteration {iter} / Process: {idx} {'*' * 20}")
             if result["success"]:
                 print(f"Training successful with the following metrics:\n{result['eureka_task_feedback']}")
-                print(f"Reward correlation with oracle rewards: {result['rewards_correlation']}")
+                print(f"Reward correlation with oracle rewards: {result['reward_correlation']}")
             else:
                 print(f"Training failed with the following exception:\n{result['exception']}\n")
 
@@ -474,12 +476,13 @@ class Tacreka_SR:
             for idx, result in enumerate(results):
                 f.write(f"{'#' * 20} Iteration: {iter} {'#' * 20}\n\n")
                 f.write(f"{'*' * 20} Run: {idx} {'*' * 20}\n")
-                f.write(f"- GPT feature components {result['assistant_prompt']}\n")
+                feature_components = json.dumps(result['assistant_prompt'], indent=2, default=str)
+                f.write(f"- GPT feature components {feature_components}\n")
                 f.write(f"- GPT reward method {result['assistant_prompt_rw_gen']}\n")
                 f.write(f"- Feature idx: {result['feature_idx']}\n")
                 if result["success"]:
                     f.write(f"Training successful with the following metrics:\n{result['eureka_task_feedback']}\n")
-                    f.write(f"Reward correlation with oracle rewards:\n{result['rewards_correlation']}\n")
+                    f.write(f"Reward correlation with oracle rewards:\n{result['reward_correlation']}\n")
                     # Log success_metric, using 0.0 if it's None (e.g., if metric wasn't found in logs)
                     success_metric_value = result.get("success_metric_max")
                     if success_metric_value is None:
@@ -508,6 +511,7 @@ class Tacreka_SR:
         if best_run_results["success_metric"] is not None:
             output += f"- Success metric: {best_run_results['success_metric']}\n"
             output += f"- GPT reward method: {best_run_results['gpt_reward_method']}\n"
+            output += f"- Feature components: {best_run_results['feature_components']}\n"
             output += f"- Task metrics:\n{best_run_results['task_feedback']}\n"
             
             # Log final results to wandb

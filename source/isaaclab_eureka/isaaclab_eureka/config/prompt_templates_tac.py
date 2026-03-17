@@ -5,9 +5,6 @@
 """Template strings used for prompting in Isaac Lab Eureka."""
 
 
-from cgi import test
-
-
 DIRECT_WORKFLOW_REWARD_FORMATTING_INSTRUCTIONS = """
 Your reward function should use useful variables from the environment as inputs.
 It must comply to the following signature exactly:
@@ -66,25 +63,16 @@ Here is how we get the observations from the environment:
 {get_observations_method_as_string}
 """
 
-############### FEAUTR GENERATION PROMPT TEMPLATES ###############
+############### FEATURE GENERATION PROMPT TEMPLATES ###############
 
-# FEATURE_GEN_PROMPT = """
-# You are a feature engineer trying to generate decompose the reward function into a list of reward components for a reinforcement learning task.
-# Your goal is to generate a list of reward components that will help the agent learn the task described in text.
-# The task description is: {task_description}
-# The desired task score is: {success_metric_to_win}
-# Here is how we get the observations from the environment:
-# {get_observations_method_as_string}
-# """
-
-
-FEATURE_GEN_FORMATTING_PROMPT = f"""
+FEATURE_GEN_FORMATTING_PROMPT = """
 Instructions:
 1) Propose 1 to 4 candidate features. Each feature must be:
    - Interpretable to a non-expert human (1 sentence description).
    - Measurable from the given observations/actions (no hidden variables).
-   - Focused on behavior/outcomes (not “learn faster” or “high return”).
-   - As independent as possible (avoid duplicates like “stability” and “uprightness” unless you clearly distinguish them).
+   - Focused on behavior/outcomes (not "learn faster" or "high return").
+   - As independent as possible (avoid duplicates like "stability" and "uprightness" unless you clearly distinguish them).
+   - Based on a signal that varies MEANINGFULLY across typical agent states — not a near-constant.
 
 2) For each feature, output the following fields:
    - feature_name: short identifier
@@ -93,7 +81,18 @@ Instructions:
    - proxy_metric: a concrete scalar metric formula in plain text (e.g., “abs(pole_angle)”, “-||cart_pos||”, “exp(-k*abs(angle))”)
    - weight: the weight of the feature in the final reward function
    - desired_direction: maximize or minimize
-   - typical_failure_mode: how an agent could “game” this feature if it were rewarded alone
+   - typical_failure_mode: how an agent could "game" this feature if it were rewarded alone
+
+   CRITICAL signal-selection rules — violating these produces useless or misleading reward components:
+   a) Do NOT use the Euclidean norm of a vector whose magnitude is approximately constant.
+      Example: torch.norm(projected_gravity_b, dim=-1) is always approximately 9.81 m/s^2 regardless
+      of the robot's orientation — it carries ZERO information about tilt or uprightness.
+      For uprightness/tilt, use a DIRECTIONAL component instead:
+        projected_gravity_b[:, 2]  (body-frame z-projection; near -9.81 when level, near 0 when severely tilted).
+   b) Do NOT reference environment attributes that are not explicitly listed in the provided observation
+      method (e.g., do not invent "previous_root_lin_vel_b" if it is not in the env class).
+   c) Confirm that your chosen signal differs significantly between a "good" agent state and a "bad" agent
+      state. If the signal_range min and max are very close (< 0.1 difference), pick a different signal.
 
 3) Categorize each feature as one of:
    - primary_success (directly tied to task success)
@@ -102,11 +101,11 @@ Instructions:
    - robustness (recovery after disturbance, maintaining performance under noise)
 
 4) After listing all features, provide:
-   - a recommended “starter subset” of 3 to 6 features that likely works well together
-   - 2 to 3 alternative subsets emphasizing different human preferences (e.g., “smooth control”, “aggressive recovery”, “energy saving”)
+   - a recommended "starter subset" of 3 to 6 features that likely works well together
+   - 2 to 3 alternative subsets emphasizing different human preferences (e.g., "smooth control", "aggressive recovery", "energy saving")
 
 Output format: valid JSON ONLY. Do not include markdown, code fences, comments, or extra text.
-"""  
+"""
 
 FEATURE_GEN_FEEDBACK_PROMPT = """
 We trained a RL policy using the reward function generated from the provided reward feature decomposition and tracked the values of the individual components in the reward function as well as global policy metrics such as success rates and episode lengths after every {feedback_subsampling} epochs and the maximum, mean, minimum values encountered:
@@ -115,39 +114,46 @@ We trained a RL policy using the reward function generated from the provided rew
 FEATURE_GEN_INITIAL_PROMPT = """
 You are a reward-design assistant for reinforcement learning.
 
-Goal: Decompose the following RL task into a small set of interpretable “features” that capture what humans would consider good performance. These features will later be turned into reward terms and combined as a weighted sum.
+Goal: Decompose the following RL task into a small set of interpretable "features" that capture what humans would consider good performance. These features will later be turned into reward terms and combined as a weighted sum.
 """ + FEATURE_GEN_FORMATTING_PROMPT
 
 FEATURE_GEN_EXPLORE_FEEDBACK_PROMPT = """
-Please carefully analyze the policy feedback and provide a new reward feature decomposition that set the training results to as close as possible to the desired task score. The new reward feature decomposition should have at least one brand new feature.
+Please carefully analyze the policy feedback and provide a new reward feature decomposition that sets the training results as close as possible to the desired task score. The new reward feature decomposition should have at least one brand new feature.
 Some helpful tips for analyzing the policy feedback:
-    (1) If the success rates are always near zero, then you must add a new reward feature decomposition component to the reward feature decomposition or consider dropping some of the existing reward feature decomposition component.
-    (2) If the values for a certain reward component are near identical throughout, then this means RL is not able to optimize this component as it is written. You may consider
-        (a) Re-define the reward component
-        (b) Define a new reward component to replace the existing reward component
+    (1) If the success rates are always near zero, then you must add a new reward feature decomposition component or consider dropping existing ones.
+    (2) If the values for a certain reward component are near identical throughout (min ≈ max, range < 0.05),
+        this component is measuring a near-constant signal and provides NO gradient to the policy. You MUST:
+        (a) Identify why the signal is constant (e.g., mistakenly using the norm of a fixed-magnitude vector).
+        (b) Replace it with a directional component or a signal that genuinely varies with agent behavior.
+            For example, replace torch.norm(projected_gravity_b) with projected_gravity_b[:, 2] for tilt.
+        (c) Verify the new feature has a meaningfully wide signal_range between good and bad agent states.
+    (3) Do NOT reference attributes that are not explicitly provided in the environment's observation method.
 Please analyze each existing reward component in the suggested manner above first, and then write the reward feature decomposition.
 """ + FEATURE_GEN_FORMATTING_PROMPT
 
 FEATURE_GEN_EXPLOIT_FEEDBACK_PROMPT = """
-Please carefully analyze the policy feedback and provide a new reward feature decomposition that set the training results to as close as possible to the desired task score. The new reward feature decomposition should have at least one feature with changed weights or discarding one of the existing feature.
+Please carefully analyze the policy feedback and provide a new reward feature decomposition that sets the training results as close as possible to the desired task score. The new reward feature decomposition should have at least one feature with changed weights or discard one of the existing features.
 Some helpful tips for analyzing the policy feedback:
-    (1) If the success rates are always near zero, then you must consider dropping some of the unhelpful reward feature decomposition component.
-    (2) If the values for a certain reward component are near identical throughout, then this means RL is not able to optimize this component as it is written. You may consider
-        (a) Changing its scale or the value of its temperature parameter
-        (b) Discarding the reward feature
-    (3) If some reward rewards' feature magnitude is significantly larger, then you must re-scale its value to a proper range
+    (1) If the success rates are always near zero, then consider dropping unhelpful reward feature components.
+    (2) If the values for a certain reward component are near identical throughout (range < 0.05), this component
+        is measuring a near-constant signal. You may consider:
+        (a) Changing its temperature parameter to produce a wider output range
+        (b) Discarding the reward feature entirely and replacing with one that has a non-trivial signal_range
+    (3) If some reward feature magnitudes are significantly larger than others, re-scale to a comparable range.
+    (4) If the total reward grew more than 5x during training, the features are not properly bounded;
+        add normalization constraints (e.g., torch.tanh or torch.clamp) in the implementation.
 Please analyze each existing reward feature in the suggested manner above first, and then write the reward feature decomposition.
 """ + FEATURE_GEN_FORMATTING_PROMPT
 
 FEATURE_GEN_PROMPT = """
-Decompose the following RL task into a small set of interpretable “features” that capture what humans would consider good performance. These features will later be turned into reward terms and combined as a weighted sum.
+Decompose the following RL task into a small set of interpretable "features" that capture what humans would consider good performance. These features will later be turned into reward terms and combined as a weighted sum.
 Task context:
 - Task description is: {task_description}
 - The desired task score is: {success_metric_to_win}
 - Here is how we get the observations from the environment: {get_observations_method_as_string}
 """
 
-############### Signle reward function generation templates ###############
+############### Single reward function generation templates ###############
 
 FEATURE_AS_ONE_REWARD_FORMATTING_PROMPT = """
 Your reward function should use useful variables from the environment as inputs.
@@ -164,22 +170,41 @@ The output of the reward function should consist of two items:
 The code output should be formatted as a python code string: "```python ... ```" and contain only the get_rewards_eureka function.
 
 Some helpful tips for writing the reward function code:
-    (1) You may find it helpful to normalize the reward to a fixed range by applying transformations like torch.exp to the overall reward or its components
-    (2) If you choose to transform a reward component, then you must also introduce a temperature parameter inside the transformation function; this parameter must be a named variable in the reward function and it must not be an input variable. Each transformed reward component should have its own temperature variable
-    (3) Make sure the type of each input variable is correctly specified; a float input variable should not be specified as torch.Tensor
-    (4) Most importantly, the reward code's input variables must contain only attributes of the provided environment class definition (namely, variables that have prefix self.). Under no circumstance can you introduce new input variables.
+    (1) Normalize each component to a fixed range such as [0, 1] using transformations like torch.exp(-t * signal)
+        or torch.tanh. This prevents reward explosion as training progresses.
+    (2) Choose temperature parameters carefully: for torch.exp(-t * signal), set t so that
+        t * (typical_signal_magnitude) is in the range [0.5, 3.0]. If position error is typically 1–5 m,
+        use t ≈ 0.2–1.0. Each transformed component must have its own named temperature variable.
+    (3) Make sure the type of each input variable is correctly specified; a float input variable should not be
+        specified as torch.Tensor.
+    (4) Most importantly, the reward code's input variables must contain only attributes of the provided
+        environment class definition (namely, variables with prefix self.). Do NOT introduce new input variables
+        or reference attributes not explicitly shown in the observation method.
+
+Critical pitfalls to avoid (each has caused zero-signal or diverging components in past runs):
+    (P1) Do NOT use torch.norm(projected_gravity_b, dim=-1) as a stability or uprightness signal.
+         Its magnitude is approximately constant at 9.81 m/s^2 regardless of robot orientation, so it
+         provides zero gradient signal. Instead use projected_gravity_b[:, 2] (body-frame z-component):
+         it is near -9.81 when level and deviates toward 0 when the robot is severely tilted.
+    (P2) When computing position error in body frame, use subtract_frame_transforms(root_pos_w, root_quat_w,
+         desired_pos_w) rather than simple vector subtraction, to correctly account for orientation.
+    (P3) Do NOT reference attributes that do not exist in the environment class (e.g., do not assume
+         previous_root_lin_vel_b exists unless it is shown in the observation method).
+    (P4) After applying torch.exp(-t * signal), verify the output range is meaningful. If signal has low
+         variance (e.g., near-constant), the component will also be near-constant. Choose a different signal.
 
 Hard requirements:
-1) Implement one reward component per feature: r_(feature_name)(...) -> Tensor of shape (num_envs,).
-2) Normalize / bound each component to roughly [-1, 1] or [0, 1] when possible (use exp, tanh, or smooth saturation).
+1) Implement one reward component per feature: r_(feature_name) as a Tensor of shape (num_envs,).
+2) Normalize / bound each component to roughly [-1, 1] or [0, 1] (use exp, tanh, or smooth saturation).
 3) Avoid sparse-only rewards: each component should provide a learning signal across most states.
-4) Mitigate reward hacking: for each feature, add a small safeguard term if needed to prevent its “typical_failure_mode”.
+4) Mitigate reward hacking: for each feature, add a small safeguard term if needed to prevent its "typical_failure_mode".
 5) Use consistent scaling so no single component dominates by accident.
 6) Provide a final reward:
    R = sum_i w_i * r_i
    Use default weights provided in the FEATURES_JSON unless you have a strong reason; if you change weights, explain why.
-7) Most importantly, the reward code's input variables must contain only attributes of the provided environment class definition (namely, variables that have prefix self.). Under no circumstance can you introduce new input variables.
-
+7) The reward code's input variables must contain only attributes of the provided environment class (prefix self.).
+8) The final combined reward must be positively correlated with task success: improving R should correspond
+   to the agent performing better on the stated task objective.
 
 Output requirements:
 - Output ONLY a single Python code block.
@@ -206,6 +231,7 @@ Each feature contains:
 - intent
 - measurable_signals (names from SIGNALS_JSON)
 - proxy_metric (plain text formula)
+- signal_range (estimated [min, max] under typical behavior)
 - desired_direction (maximize/minimize)
 - typical_failure_mode
 '''
@@ -221,12 +247,17 @@ We trained a RL policy using the provided reward function code and tracked the v
 
 FEATURE_AS_ONE_SUCCESS_POST_FEEDBACK_PROMPT = """
 Please carefully analyze the policy feedback and provide a new, improved reward function that can better solve the task. Some helpful tips for analyzing the policy feedback:
-    (1) If the success rates are always near zero, then you must rewrite the entire reward function
-    (2) If the values for a certain reward component are near identical throughout, then this means RL is not able to optimize this component as it is written. You may consider
-        (a) Changing its scale or the value of its temperature parameter
-        (b) Re-writing the reward components
-        (c) Discarding the reward component
-    (3) If some reward components' magnitude is significantly larger, then you must re-scale its value to a proper range
+    (1) If the success rates are always near zero, then you must rewrite the entire reward function.
+    (2) If the values for a certain reward component are near identical throughout (Min ≈ Max, range < 0.05),
+        this component is measuring a near-constant signal and provides NO gradient to the policy. You MUST:
+        (a) Identify the root cause — e.g., using torch.norm() of a fixed-magnitude vector like projected_gravity_b.
+        (b) Replace it with a genuinely varying signal (e.g., projected_gravity_b[:, 2] for tilt/uprightness).
+        (c) Alternatively, re-write or discard the component entirely.
+    (3) If some reward components' magnitude is significantly larger, then you must re-scale to a proper range.
+    (4) If the total reward magnitude grew more than 5x during training (e.g., from ~1 to ~40), the components
+        are not properly bounded. Apply torch.tanh or torch.clamp to keep each component in [-1, 1] or [0, 1].
+    (5) If the task_score improves initially but then degrades (reward-objective misalignment), strengthen
+        the primary_success component weight and/or remove auxiliary terms that pull in a conflicting direction.
 Please analyze each existing reward component in the suggested manner above first, and then write the reward function code based on the refined set of features.
 Features to implement (refined): {FEATURES_JSON}
 """ + DIRECT_WORKFLOW_REWARD_FORMATTING_INSTRUCTIONS
@@ -269,22 +300,41 @@ The output of the reward function should consist of two items:
 The code output should be formatted as a python code string: "```python ... ```" and contain only the get_rewards_eureka function.
 
 Some helpful tips for writing the reward function code:
-    (1) You may find it helpful to normalize the reward to a fixed range by applying transformations like torch.exp to the overall reward or its components
-    (2) If you choose to transform a reward component, then you must also introduce a temperature parameter inside the transformation function; this parameter must be a named variable in the reward function and it must not be an input variable. Each transformed reward component should have its own temperature variable
-    (3) Make sure the type of each input variable is correctly specified; a float input variable should not be specified as torch.Tensor
-    (4) Most importantly, the reward code's input variables must contain only attributes of the provided environment class definition (namely, variables that have prefix self.). Under no circumstance can you introduce new input variables.
+    (1) Normalize each component to a fixed range such as [0, 1] using transformations like torch.exp(-t * signal)
+        or torch.tanh. This prevents reward explosion as training progresses.
+    (2) Choose temperature parameters carefully: for torch.exp(-t * signal), set t so that
+        t * (typical_signal_magnitude) is in the range [0.5, 3.0]. If position error is typically 1–5 m,
+        use t ≈ 0.2–1.0. Each transformed component must have its own named temperature variable.
+    (3) Make sure the type of each input variable is correctly specified; a float input variable should not be
+        specified as torch.Tensor.
+    (4) Most importantly, the reward code's input variables must contain only attributes of the provided
+        environment class definition (namely, variables with prefix self.). Do NOT introduce new input variables
+        or reference attributes not explicitly shown in the observation method.
+
+Critical pitfalls to avoid (each has caused zero-signal or diverging components in past runs):
+    (P1) Do NOT use torch.norm(projected_gravity_b, dim=-1) as a stability or uprightness signal.
+         Its magnitude is approximately constant at 9.81 m/s^2 regardless of robot orientation, so it
+         provides zero gradient signal. Instead use projected_gravity_b[:, 2] (body-frame z-component):
+         it is near -9.81 when level and deviates toward 0 when the robot is severely tilted.
+    (P2) When computing position error in body frame, use subtract_frame_transforms(root_pos_w, root_quat_w,
+         desired_pos_w) rather than simple vector subtraction, to correctly account for orientation.
+    (P3) Do NOT reference attributes that do not exist in the environment class (e.g., do not assume
+         previous_root_lin_vel_b exists unless it is shown in the observation method).
+    (P4) After applying torch.exp(-t * signal), verify the output range is meaningful. If signal has low
+         variance (e.g., near-constant), the component will also be near-constant. Choose a different signal.
 
 Hard requirements:
-1) Implement one reward component per feature: r_(feature_name)(...) -> Tensor of shape (num_envs,).
-2) Normalize / bound each component to roughly [-1, 1] or [0, 1] when possible (use exp, tanh, or smooth saturation).
+1) Implement one reward component per feature: r_(feature_name) as a Tensor of shape (num_envs,).
+2) Normalize / bound each component to roughly [-1, 1] or [0, 1] (use exp, tanh, or smooth saturation).
 3) Avoid sparse-only rewards: each component should provide a learning signal across most states.
-4) Mitigate reward hacking: for each feature, add a small safeguard term if needed to prevent its “typical_failure_mode”.
+4) Mitigate reward hacking: for each feature, add a small safeguard term if needed to prevent its "typical_failure_mode".
 5) Use consistent scaling so no single component dominates by accident.
 6) Provide a final reward:
    R = sum_i w_i * r_i
-   Use default weights w_i = 1.0 unless you have a strong reason; if you change weights, explain why.
-7) Most importantly, the reward code's input variables must contain only attributes of the provided environment class definition (namely, variables that have prefix self.). Under no circumstance can you introduce new input variables.
-
+   Use default weights from the FEATURES_JSON unless you have a strong reason; if you change weights, explain why.
+7) The reward code's input variables must contain only attributes of the provided environment class (prefix self.).
+8) The final combined reward must be positively correlated with task success: improving R should correspond
+   to the agent performing better on the stated task objective.
 
 Output requirements:
 - Output ONLY a single Python code block.
@@ -304,11 +354,16 @@ We trained a RL policy using the provided reward function code and tracked the v
 
 TEST_SUCCESS_POST_FEEDBACK_PROMPT = """
 Please carefully analyze the policy feedback and provide a new, improved reward function that can better solve the task. Some helpful tips for analyzing the policy feedback:
-    (1) If the success rates are always near zero, then you must rewrite the entire reward function
-    (2) If the values for a certain reward component are near identical throughout, then this means RL is not able to optimize this component as it is written. You may consider
-        (a) Changing its scale or the value of its temperature parameter
-        (b) Re-writing the reward component
-        (c) Discarding the reward component
-    (3) If some reward components' magnitude is significantly larger, then you must re-scale its value to a proper range
+    (1) If the success rates are always near zero, then you must rewrite the entire reward function.
+    (2) If the values for a certain reward component are near identical throughout (Min ≈ Max, range < 0.05),
+        this component is measuring a near-constant signal and provides NO gradient to the policy. You MUST:
+        (a) Identify the root cause — e.g., using torch.norm() of a fixed-magnitude vector like projected_gravity_b.
+        (b) Replace it with a genuinely varying signal (e.g., projected_gravity_b[:, 2] for tilt/uprightness).
+        (c) Alternatively, re-write or discard the component entirely.
+    (3) If some reward components' magnitude is significantly larger, then you must re-scale to a proper range.
+    (4) If the total reward magnitude grew more than 5x during training (e.g., from ~1 to ~40), the components
+        are not properly bounded. Apply torch.tanh or torch.clamp to keep each component in [-1, 1] or [0, 1].
+    (5) If the task_score improves initially but then degrades (reward-objective misalignment), strengthen
+        the primary_success component weight and/or remove auxiliary terms that pull in a conflicting direction.
 Please analyze each existing reward component in the suggested manner above first, and then write the reward function code.
 """ + FEATURE_AS_ONE_REWARD_TEST_FORMATTING_PROMPT

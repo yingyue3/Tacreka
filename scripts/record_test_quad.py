@@ -33,3 +33,4 @@ recorder = RecordManagerQuad(
     num_episodes=1,
 )
 recorder.record(checkpoint="/home/yingyue/scratch/Tacreka/logs/saved_logs/Tacreka_Quad_3-03/checkpoint/quadcopter_direct/2026-03-03_13-01-55_Run-1/model_99.pt", output_file="./recordings/quadcopter_checkpoint.mp4")
+recorder.record(checkpoint="/home/yingyue/scratch/Tacreka/logs/rl_runs/rsl_rl_eureka/quadcopter_direct/2026-03-16_23-16-47_Run-2/model_99.pt", output_file="./recordings/quadcopter_checkpoint.mp4")

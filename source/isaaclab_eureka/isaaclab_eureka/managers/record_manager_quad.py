@@ -101,6 +101,7 @@ class RecordManagerQuad:
         app_launcher = AppLauncher(headless=self.headless, device=device)
         simulation_app = app_launcher.app
         self.simulation_app = simulation_app
+        self.device = device  # update to resolved device (e.g. "cuda:0")
 
         import gymnasium as gym
 
@@ -398,13 +399,12 @@ class RecordManagerQuad:
                 raise ValueError(f"Unsupported rl_library: {self.rl_library}")
         finally:
             writer.close()
-            self.env.close()
             print(f"[INFO] Fallback recording complete. Frames: {self._frame_idx}")
             print(f"[INFO] Saved video: {output_file}")
 
     def close(self):
         """Close the environment and simulation app."""
-        # self.env.close()
+        self.env.close()
         self.simulation_app.close()
 
     def _record_rsl_rl(self, env, device, simulation_app, writer, active_env_idx, load_cfg_from_registry, torch, checkpoint):
@@ -424,7 +424,7 @@ class RecordManagerQuad:
         while simulation_app.is_running():
             with torch.inference_mode():
                 actions = policy(obs)
-                obs, rewards, dones, _ = env.step(actions)
+            obs, rewards, dones, _ = env.step(actions)
 
             policy_obs = self._extract_policy_obs(obs)
             if policy_obs.ndim == 1:
@@ -514,7 +514,7 @@ class RecordManagerQuad:
             with torch.inference_mode():
                 actor_obs = agent.obs_to_torch(obs)
                 actions = agent.get_action(actor_obs, is_deterministic=True)
-                next_obs, rewards, dones, _ = env.step(actions)
+            next_obs, rewards, dones, _ = env.step(actions)
 
             policy_obs = self._extract_policy_obs(next_obs)
             if policy_obs.ndim == 1:
