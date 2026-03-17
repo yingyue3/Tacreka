@@ -32,5 +32,5 @@ recorder = RecordManagerQuad(
     max_frames=900,
     num_episodes=1,
 )
-recorder.record(checkpoint="/home/yingyue/scratch/Tacreka/logs/saved_logs/Tacreka_Quad_3-03/checkpoint/quadcopter_direct/2026-03-03_13-01-55_Run-1/model_99.pt", output_file="./recordings/quadcopter_checkpoint.mp4")
-recorder.record(checkpoint="/home/yingyue/scratch/Tacreka/logs/rl_runs/rsl_rl_eureka/quadcopter_direct/2026-03-16_23-16-47_Run-2/model_99.pt", output_file="./recordings/quadcopter_checkpoint.mp4")
+recorder.record(checkpoint="/home/yingyue/scratch/Tacreka/logs/saved_logs/Eureka_Quad_2-24/checkpoint/2026-02-24_03-27-58_Run-0/model_99.pt", output_file="./recordings/quad_eureka_2-24.mp4")
+recorder.record(checkpoint="/home/yingyue/scratch/Tacreka/logs/rl_runs/rsl_rl_eureka/quadcopter_direct/2026-03-17_15-01-32_Run-0/model_99.pt", output_file="./recordings/quad_tacreka_3-17.mp4")

@@ -309,7 +309,16 @@ class Tacreka_SR:
                             best_run_checkpoint = result["log_dir"] + "/model_99.pt"
                             self._record_manager.record(checkpoint=best_run_checkpoint, output_file="./ratings/best_run_quad.mp4")
                         else:
-                            print("Human feedback is enabled, skipping best metric check")
+                            print("Please provide feedback for the best reward function")
+                            self._record_manager.record(checkpoint=result["log_dir"] + "/model_99.pt", output_file=f"./ratings/new_run_quad.mp4")
+                            print("1. Press 1 if the new run is preferred")
+                            print("2. Press 2 if the best run is preferred")
+                            input_feedback = input("Enter your feedback: ")
+                            if input_feedback == "1":
+                                iter_best_success_metric = success_metric_max
+                                best_run_idx = idx
+                                os.rename("./ratings/new_run_quad.mp4", "./ratings/best_run_quad.mp4")
+                                print("Best run updated")
                             print("Please provide feedback for the current run")
                             print("1. Press 1 if the run 1 is preferred")
                             print("2. Press 2 if the run 2 is preferred")
@@ -338,16 +347,6 @@ class Tacreka_SR:
                                 best_run_feature_components = feature_gen_outputs["raw_outputs"][best_run_feature_idx]
                                 # iter_best_success_metric = success_metric_max
                             print("Best reward components updated")
-                            print("Now Please provide feedback for the best reward function")
-                            self._record_manager.record(checkpoint=result["log_dir"] + "/model_99.pt", output_file=f"./ratings/new_run_quad.mp4")
-                            print("1. Press 1 if the new run is preferred")
-                            print("2. Press 2 if the best run is preferred")
-                            input_feedback = input("Enter your feedback: ")
-                            if input_feedback == "1":
-                                iter_best_success_metric = success_metric_max
-                                best_run_idx = idx
-                                os.rename("./ratings/new_run_quad.mp4", "./ratings/best_run_quad.mp4")
-                                print("Best run updated")
 
 
 
@@ -363,7 +362,10 @@ class Tacreka_SR:
                                 best_run_results["feature_components"] = feature_gen_outputs["raw_outputs"][best_run_feature_idx]
                                 best_run_results["gpt_reward_method"] = gpt_reward_method_strings[idx]["reward_strings"]
                                 print("logging best metric")
-                        
+
+
+                ### Provide feedback for the best reward components
+                   
                 # Add the prompts
                 feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
                 results[idx]["user_prompt"] = user_feedback_prompt
