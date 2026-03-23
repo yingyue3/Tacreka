@@ -7,7 +7,7 @@
 import argparse
 import os
 
-from isaaclab_eureka import Revolve, RevolveFull
+from isaaclab_eureka import Revolve, RevolveFull, Tacreka_SR
 from isaaclab_eureka.eureka import Eureka
 from isaaclab_eureka.tacreka_sr_auto import Tacreka_SR
 

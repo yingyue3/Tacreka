@@ -4,6 +4,7 @@
 
 import datetime
 import glob
+import json
 import math
 import os
 import random
@@ -17,6 +18,7 @@ from isaaclab_eureka.config import (
     TASKS_CFG,
 )
 from isaaclab_eureka.managers import EurekaTaskManager, LLMManager
+from isaaclab_eureka.learning_curve_utils import export_learning_curve_artifacts
 from isaaclab_eureka.revolve_full.database import RevolveDatabase
 from isaaclab_eureka.revolve_full import prompts as revolve_prompts
 from isaaclab_eureka.revolve_full.human_feedback import compute_hf_scores
@@ -124,6 +126,7 @@ class RevolveFull:
 
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self._log_dir = os.path.join(EUREKA_ROOT_DIR, "logs", "revolve_full", task, timestamp)
+        self._rl_runs_dir = os.path.join(self._log_dir, "rl_runs")
         self._db_dir = os.path.join(self._log_dir, "database")
         os.makedirs(self._db_dir, exist_ok=True)
         if self._use_hf:
@@ -146,6 +149,7 @@ class RevolveFull:
             max_training_iterations=max_training_iterations,
             success_metric_string=self._task_cfg.get("success_metric"),
             log_namespace="revolve_full",
+            rl_log_root_dir=self._rl_runs_dir,
         )
 
         self._use_wandb = use_wandb
@@ -288,9 +292,13 @@ class RevolveFull:
                     best_overall["candidate_counter"] = counter_id
                     best_overall["candidate_island"] = island_id
                     best_overall["training_log_dir"] = result.get("log_dir")
+                    best_overall["training_run_dir"] = result.get("run_dir", result.get("log_dir"))
                     best_overall["candidate_reward_file"] = reward_file
                     best_overall["candidate_fitness_file"] = fitness_file
-                    best_overall["checkpoint_file"] = self._resolve_checkpoint_path(result.get("log_dir"))
+                    best_overall["checkpoint_file"] = result.get("checkpoint_file") or self._resolve_checkpoint_path(
+                        result.get("run_dir", result.get("log_dir"))
+                    )
+                    best_overall["learning_curve"] = result.get("learning_curve")
 
             if len(rew_fn_strings) == 0:
                 print("[WARN] No valid reward functions generated; skipping generation update.")
@@ -410,6 +418,14 @@ class RevolveFull:
 
     def _log_final_results(self, best_run_results: Dict) -> None:
         output = ""
+        if best_run_results.get("training_log_dir"):
+            best_learning_curve = export_learning_curve_artifacts(
+                best_run_results["training_log_dir"],
+                output_dir=os.path.join(self._log_dir, "best_run_learning_curves"),
+                run_name="best_run",
+            )
+            if best_learning_curve is not None:
+                best_run_results["best_learning_curve"] = best_learning_curve
         if best_run_results.get("fitness") is not None:
             output += f"- Success metric: {best_run_results['fitness']}\n"
             output += f"- Best candidate id: {best_run_results.get('candidate_id', 'unknown')}\n"
@@ -432,7 +448,10 @@ class RevolveFull:
             )
             output += f"- Best candidate evolution fitness: {best_run_results.get('evolution_fitness', 'unknown')}\n"
             output += f"- Best candidate training log dir: {best_run_results.get('training_log_dir', 'unknown')}\n"
+            output += f"- Best candidate training run dir: {best_run_results.get('training_run_dir', 'unknown')}\n"
             output += f"- Best candidate checkpoint: {best_run_results.get('checkpoint_file', 'unknown')}\n"
+            learning_curve_path = best_run_results.get("best_learning_curve", {}).get("plot_path", "unknown")
+            output += f"- Best candidate learning curve plot: {learning_curve_path}\n"
             output += f"- GPT reward method:\n{best_run_results.get('reward')}\n"
             output += f"- Task metrics:\n{best_run_results.get('feedback', '')}\n"
             if self._use_wandb and self._wandb:
@@ -454,5 +473,7 @@ class RevolveFull:
         print("Final results:\n", output)
         with open(f"{self._log_dir}/revolve_full_final_result.txt", "w") as f:
             f.write(output)
+        with open(f"{self._log_dir}/best_run.json", "w") as f:
+            json.dump(best_run_results, f, indent=2, default=str)
         if self._use_wandb and self._wandb:
             self._wandb.finish()

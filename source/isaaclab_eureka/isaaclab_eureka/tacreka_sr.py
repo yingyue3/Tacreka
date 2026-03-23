@@ -10,6 +10,7 @@ from typing import Literal
 # we import this here to avoid GLIBCXX_3.4.30 error in Isaac Sim 5.1
 from isaaclab.app import AppLauncher
 from isaaclab_eureka import EUREKA_ROOT_DIR
+from isaaclab_eureka.learning_curve_utils import export_learning_curve_artifacts, resolve_checkpoint_path
 from isaaclab_eureka.config import (
     DIRECT_WORKFLOW_INITIAL_PROMPT,
     DIRECT_WORKFLOW_TASK_PROMPT,
@@ -88,6 +89,12 @@ class Tacreka_SR:
         # num parallel runs is the number of parallel runs for the task (reward functions number)
         self._num_parallel_runs = 2
 
+        # Logging
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self._log_dir = os.path.join(EUREKA_ROOT_DIR, "logs", "tacreka_sr", task, timestamp)
+        self._rl_runs_dir = os.path.join(self._log_dir, "rl_runs")
+        os.makedirs(self._log_dir)
+
         print("[INFO]: Setting up the LLM Manager...")
         self._llm_manager = LLMManager(
             gpt_model=gpt_model,
@@ -106,12 +113,9 @@ class Tacreka_SR:
             num_processes=self._num_parallel_runs * self._num_processes,
             max_training_iterations=max_training_iterations,
             success_metric_string=success_metric_string,
+            log_namespace="tacreka_sr",
+            rl_log_root_dir=self._rl_runs_dir,
         )
-
-        # Logging
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        self._log_dir = os.path.join(EUREKA_ROOT_DIR, "logs", "eureka", task, timestamp)
-        os.makedirs(self._log_dir)
 
         # We import here because doing this before launching Kit causes GLIBCXX errors
         from torch.utils.tensorboard import SummaryWriter as TensorboardSummaryWriter
@@ -293,6 +297,12 @@ class Tacreka_SR:
                             best_run_results["feature_idx"] = gpt_reward_method_strings[idx]["feature_idx"]
                             best_run_results["task_feedback"] = eureka_task_feedback
                             best_run_results["rewards_correlation"] = rewards_correlation
+                            best_run_results["training_log_dir"] = result.get("log_dir")
+                            best_run_results["training_run_dir"] = result.get("run_dir", result.get("log_dir"))
+                            best_run_results["checkpoint_file"] = result.get("checkpoint_file") or resolve_checkpoint_path(
+                                result.get("run_dir", result.get("log_dir"))
+                            )
+                            best_run_results["learning_curve"] = result.get("learning_curve")
                             print("logging best metric to wandb")
                             # Log best metric to wandb
                             if self._use_wandb and self._wandb:
@@ -320,6 +330,12 @@ class Tacreka_SR:
                             best_run_results["feature_idx"] = gpt_reward_method_strings[idx]["feature_idx"]
                             best_run_results["task_feedback"] = eureka_task_feedback
                             best_run_results["rewards_correlation"] = rewards_correlation
+                            best_run_results["training_log_dir"] = result.get("log_dir")
+                            best_run_results["training_run_dir"] = result.get("run_dir", result.get("log_dir"))
+                            best_run_results["checkpoint_file"] = result.get("checkpoint_file") or resolve_checkpoint_path(
+                                result.get("run_dir", result.get("log_dir"))
+                            )
+                            best_run_results["learning_curve"] = result.get("learning_curve")
                             print("logging best metric to wandb")
                             # Log best metric to wandb
                             if self._use_wandb and self._wandb:
@@ -470,10 +486,24 @@ class Tacreka_SR:
 
     def _log_final_results(self, best_run_results: dict):
         """Log the final results of the Eureka run."""
+        if best_run_results.get("training_log_dir"):
+            best_learning_curve = export_learning_curve_artifacts(
+                best_run_results["training_log_dir"],
+                output_dir=os.path.join(self._log_dir, "best_run_learning_curves"),
+                run_name="best_run",
+            )
+            if best_learning_curve is not None:
+                best_run_results["best_learning_curve"] = best_learning_curve
+
         output = ""
         if best_run_results["success_metric"] is not None:
             output += f"- Success metric: {best_run_results['success_metric']}\n"
             output += f"- GPT reward method: {best_run_results['gpt_reward_method']}\n"
+            output += f"- Best training log dir: {best_run_results.get('training_log_dir', 'unknown')}\n"
+            output += f"- Best training run dir: {best_run_results.get('training_run_dir', 'unknown')}\n"
+            output += f"- Best checkpoint: {best_run_results.get('checkpoint_file', 'unknown')}\n"
+            learning_curve_path = best_run_results.get("best_learning_curve", {}).get("plot_path", "unknown")
+            output += f"- Best learning curve plot: {learning_curve_path}\n"
             output += f"- Task metrics:\n{best_run_results['task_feedback']}\n"
             
             # Log final results to wandb
@@ -493,6 +523,8 @@ class Tacreka_SR:
 
         with open(f"{self._log_dir}/eureka_final_result.txt", "w") as f:
             f.write(output)
+        with open(f"{self._log_dir}/best_run.json", "w") as f:
+            json.dump(best_run_results, f, indent=2, default=str)
         
         # Finish wandb run
         if self._use_wandb and self._wandb:

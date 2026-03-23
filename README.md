@@ -92,9 +92,9 @@ This directory holds files containing the output from each Eureka iteration, as 
 of the final Eureka results for the task. The tensorboard log also contains a Text tab which shows the raw LLM output
 and the provided feedback at every iteration.
 
-In addition, trained policies during the Eureka run are saved under ``IsaacLabEureka/logs/rl_runs``.
-This directory contains checkpoints for each valid Eureka run, similar to the checkpoints available
-when training with Isaac Lab.
+In addition, trained policies for each baseline run are saved directly inside that run directory under
+``IsaacLabEureka/logs/<baseline>/<task>/<timestamp>/rl_runs``. Each individual RL training run is now an immediate
+child of that folder and stores its checkpoint, TensorBoard events, and generated learning-curve artifacts together.
 
 To run inference on an Eureka-trained policy, locate the path to the desired checkpoint and run the ``scripts/play.py`` script.
 
@@ -108,6 +108,33 @@ For RL-Games, run:
 
 ```
     python scripts/play.py --task=Isaac-Cartpole-Direct-v0 --checkpoint=/path/to/desired/checkpoint.pth --num_envs=20 --rl_library="rl_games"
+```
+
+### Comparing Learning Curves
+
+Each successful RL training run now writes:
+
+- ``learning_curves/learning_curves.png``
+- ``learning_curves/learning_curve_data.csv``
+- ``learning_curves/learning_curve_metadata.json``
+
+Each top-level baseline run also writes ``best_run.json`` plus ``best_run_learning_curves/`` for the selected best run.
+
+To regenerate the individual learning curves for a single baseline run or RL run later, use:
+
+```bash
+python scripts/export_learning_curve.py \
+    logs/eureka/<task>/<timestamp>
+```
+
+To compare the best runs across baselines, pass the baseline run directories or raw RL run directories to:
+
+```bash
+python scripts/plot_learning_curves.py \
+    logs/eureka/<task>/<timestamp> \
+    logs/revolve/<task>/<timestamp> \
+    logs/revolve_full/<task>/<timestamp> \
+    logs/tacreka_sr/<task>/<timestamp>
 ```
 
 ### Limitations

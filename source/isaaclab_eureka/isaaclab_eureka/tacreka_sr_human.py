@@ -16,6 +16,7 @@ from typing import Literal
 # we import this here to avoid GLIBCXX_3.4.30 error in Isaac Sim 5.1
 from isaaclab.app import AppLauncher
 from isaaclab_eureka import EUREKA_ROOT_DIR
+from isaaclab_eureka.learning_curve_utils import export_learning_curve_artifacts, resolve_checkpoint_path
 from isaaclab_eureka.config import (
     DIRECT_WORKFLOW_INITIAL_PROMPT,
     DIRECT_WORKFLOW_TASK_PROMPT,
@@ -95,6 +96,12 @@ class Tacreka_SR:
         # num parallel runs is the number of parallel runs for the task (reward functions number)
         self._num_parallel_runs = 3
 
+        # Logging
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self._log_dir = os.path.join(EUREKA_ROOT_DIR, "logs", "tacreka_sr", task, timestamp)
+        self._rl_runs_dir = os.path.join(self._log_dir, "rl_runs")
+        os.makedirs(self._log_dir)
+
         print("[INFO]: Setting up the LLM Manager...")
         self._llm_manager = LLMManagerTac(
             gpt_model=gpt_model,
@@ -112,6 +119,8 @@ class Tacreka_SR:
             num_processes=self._num_parallel_runs,
             max_training_iterations=max_training_iterations,
             success_metric_string=success_metric_string,
+            log_namespace="tacreka_sr",
+            rl_log_root_dir=self._rl_runs_dir,
         )
 
         print("[INFO]: Setting up the Record Manager...")
@@ -122,11 +131,6 @@ class Tacreka_SR:
             max_frames=900,
             num_episodes=1,
         )
-
-        # Logging
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        self._log_dir = os.path.join(EUREKA_ROOT_DIR, "logs", "eureka", task, timestamp)
-        os.makedirs(self._log_dir)
 
         # We import here because doing this before launching Kit causes GLIBCXX errors
         from torch.utils.tensorboard import SummaryWriter as TensorboardSummaryWriter
@@ -306,7 +310,9 @@ class Tacreka_SR:
                             best_run_task_feedback = eureka_task_feedback
                             best_run_feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
                             best_run_feature_components = feature_gen_outputs["feature_strings"][best_run_feature_idx]
-                            best_run_checkpoint = result["log_dir"] + "/model_99.pt"
+                            best_run_checkpoint = result.get("checkpoint_file") or resolve_checkpoint_path(
+                                result.get("run_dir", result["log_dir"])
+                            )
                             self._record_manager.record(checkpoint=best_run_checkpoint, output_file="./ratings/best_run_quad.mp4")
                         else:
                             print("Please provide feedback for the best reward function")
@@ -347,6 +353,19 @@ class Tacreka_SR:
                                 best_run_feature_components = feature_gen_outputs["raw_outputs"][best_run_feature_idx]
                                 # iter_best_success_metric = success_metric_max
                             print("Best reward components updated")
+                            print("Now Please provide feedback for the best reward function")
+                            new_run_checkpoint = result.get("checkpoint_file") or resolve_checkpoint_path(
+                                result.get("run_dir", result["log_dir"])
+                            )
+                            self._record_manager.record(checkpoint=new_run_checkpoint, output_file=f"./ratings/new_run_quad.mp4")
+                            print("1. Press 1 if the new run is preferred")
+                            print("2. Press 2 if the best run is preferred")
+                            input_feedback = input("Enter your feedback: ")
+                            if input_feedback == "1":
+                                iter_best_success_metric = success_metric_max
+                                best_run_idx = idx
+                                os.rename("./ratings/new_run_quad.mp4", "./ratings/best_run_quad.mp4")
+                                print("Best run updated")
 
 
 
@@ -361,6 +380,12 @@ class Tacreka_SR:
                                 best_run_results["feature_idx"] = gpt_reward_method_strings[idx]["feature_idx"]
                                 best_run_results["feature_components"] = feature_gen_outputs["raw_outputs"][best_run_feature_idx]
                                 best_run_results["gpt_reward_method"] = gpt_reward_method_strings[idx]["reward_strings"]
+                                best_run_results["training_log_dir"] = result.get("log_dir")
+                                best_run_results["training_run_dir"] = result.get("run_dir", result.get("log_dir"))
+                                best_run_results["checkpoint_file"] = result.get("checkpoint_file") or resolve_checkpoint_path(
+                                    result.get("run_dir", result.get("log_dir"))
+                                )
+                                best_run_results["learning_curve"] = result.get("learning_curve")
                                 print("logging best metric")
 
 
@@ -509,11 +534,25 @@ class Tacreka_SR:
 
     def _log_final_results(self, best_run_results: dict):
         """Log the final results of the Eureka run."""
+        if best_run_results.get("training_log_dir"):
+            best_learning_curve = export_learning_curve_artifacts(
+                best_run_results["training_log_dir"],
+                output_dir=os.path.join(self._log_dir, "best_run_learning_curves"),
+                run_name="best_run",
+            )
+            if best_learning_curve is not None:
+                best_run_results["best_learning_curve"] = best_learning_curve
+
         output = ""
         if best_run_results["success_metric"] is not None:
             output += f"- Success metric: {best_run_results['success_metric']}\n"
             output += f"- GPT reward method: {best_run_results['gpt_reward_method']}\n"
             output += f"- Feature components: {best_run_results['feature_components']}\n"
+            output += f"- Best training log dir: {best_run_results.get('training_log_dir', 'unknown')}\n"
+            output += f"- Best training run dir: {best_run_results.get('training_run_dir', 'unknown')}\n"
+            output += f"- Best checkpoint: {best_run_results.get('checkpoint_file', 'unknown')}\n"
+            learning_curve_path = best_run_results.get("best_learning_curve", {}).get("plot_path", "unknown")
+            output += f"- Best learning curve plot: {learning_curve_path}\n"
             output += f"- Task metrics:\n{best_run_results['task_feedback']}\n"
             
             # Log final results to wandb
@@ -533,6 +572,8 @@ class Tacreka_SR:
 
         with open(f"{self._log_dir}/eureka_final_result.txt", "w") as f:
             f.write(output)
+        with open(f"{self._log_dir}/best_run.json", "w") as f:
+            json.dump(best_run_results, f, indent=2, default=str)
         
         # Finish wandb run
         if self._use_wandb and self._wandb:

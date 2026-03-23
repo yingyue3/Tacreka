@@ -7,7 +7,7 @@ import sys
 from collections import defaultdict
 
 import GPUtil
-from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+from isaaclab_eureka.learning_curve_utils import load_tensorboard_scalar_series
 
 
 def load_tensorboard_logs(path: str):
@@ -20,13 +20,8 @@ def load_tensorboard_logs(path: str):
         A dictionary with the tags and their respective values.
     """
     data = defaultdict(list)
-    event_acc = EventAccumulator(path)
-    event_acc.Reload()  # Load all data written so far
-
-    for tag in event_acc.Tags()["scalars"]:
-        events = event_acc.Scalars(tag)
-        for event in events:
-            data[tag].append(event.value)
+    for tag, series in load_tensorboard_scalar_series(path).items():
+        data[tag].extend(series["values"])
 
     return data
 

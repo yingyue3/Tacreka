@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import datetime
+import json
 import math
 import os
 import time
@@ -18,6 +19,7 @@ from isaaclab_eureka.config import (
     TASKS_CFG,
 )
 from isaaclab_eureka.managers import EurekaTaskManager, LLMManager
+from isaaclab_eureka.learning_curve_utils import export_learning_curve_artifacts, resolve_checkpoint_path
 from isaaclab_eureka.revolve import EloRanker, pairwise_preferences_from_metrics
 from isaaclab_eureka.utils import load_tensorboard_logs
 
@@ -54,6 +56,12 @@ class Revolve:
         self._num_pairs = max(1, num_pairs)
         self._num_processes = self._num_pairs * 2
 
+        # Logging
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self._log_dir = os.path.join(EUREKA_ROOT_DIR, "logs", "revolve", task, timestamp)
+        self._rl_runs_dir = os.path.join(self._log_dir, "rl_runs")
+        os.makedirs(self._log_dir)
+
         print("[INFO]: Setting up the LLM Manager (revolve baseline)...")
         self._llm_manager = LLMManager(
             gpt_model=gpt_model,
@@ -71,12 +79,9 @@ class Revolve:
             num_processes=self._num_processes,
             max_training_iterations=max_training_iterations,
             success_metric_string=task_cfg.get("success_metric"),
+            log_namespace="revolve",
+            rl_log_root_dir=self._rl_runs_dir,
         )
-
-        # Logging
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        self._log_dir = os.path.join(EUREKA_ROOT_DIR, "logs", "revolve", task, timestamp)
-        os.makedirs(self._log_dir)
 
         from torch.utils.tensorboard import SummaryWriter as TensorboardSummaryWriter
 
@@ -178,6 +183,14 @@ class Revolve:
                 best_run_results["success_metric"] = best_metric
                 best_run_results["gpt_reward_method"] = reward_strings[best_run_idx]
                 best_run_results["task_feedback"] = results[best_run_idx].get("eureka_task_feedback", "")
+                best_run_results["training_log_dir"] = results[best_run_idx].get("log_dir")
+                best_run_results["training_run_dir"] = results[best_run_idx].get(
+                    "run_dir", results[best_run_idx].get("log_dir")
+                )
+                best_run_results["checkpoint_file"] = results[best_run_idx].get("checkpoint_file") or resolve_checkpoint_path(
+                    results[best_run_idx].get("run_dir", results[best_run_idx].get("log_dir"))
+                )
+                best_run_results["learning_curve"] = results[best_run_idx].get("learning_curve")
                 if self._use_wandb and self._wandb:
                     self._wandb.log(
                         {
@@ -322,10 +335,24 @@ class Revolve:
 
     def _log_final_results(self, best_run_results: Dict) -> None:
         """Log the final best reward and rating."""
+        if best_run_results.get("training_log_dir"):
+            best_learning_curve = export_learning_curve_artifacts(
+                best_run_results["training_log_dir"],
+                output_dir=os.path.join(self._log_dir, "best_run_learning_curves"),
+                run_name="best_run",
+            )
+            if best_learning_curve is not None:
+                best_run_results["best_learning_curve"] = best_learning_curve
+
         output = ""
         if best_run_results.get("success_metric") is not None:
             output += f"- Success metric: {best_run_results['success_metric']}\n"
             output += f"- GPT reward method: {best_run_results.get('gpt_reward_method')}\n"
+            output += f"- Best training log dir: {best_run_results.get('training_log_dir', 'unknown')}\n"
+            output += f"- Best training run dir: {best_run_results.get('training_run_dir', 'unknown')}\n"
+            output += f"- Best checkpoint: {best_run_results.get('checkpoint_file', 'unknown')}\n"
+            learning_curve_path = best_run_results.get("best_learning_curve", {}).get("plot_path", "unknown")
+            output += f"- Best learning curve plot: {learning_curve_path}\n"
             output += f"- Task metrics:\n{best_run_results.get('task_feedback', '')}\n"
             if self._use_wandb and self._wandb:
                 self._wandb.log(
@@ -343,5 +370,7 @@ class Revolve:
         print("Final results:\n", output)
         with open(f"{self._log_dir}/revolve_final_result.txt", "w") as f:
             f.write(output)
+        with open(f"{self._log_dir}/best_run.json", "w") as f:
+            json.dump(best_run_results, f, indent=2, default=str)
         if self._use_wandb and self._wandb:
             self._wandb.finish()
