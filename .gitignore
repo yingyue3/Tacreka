@@ -3,4 +3,5 @@
 logs/
 recordings/
 ratings/
+saved_files/
 *.out 

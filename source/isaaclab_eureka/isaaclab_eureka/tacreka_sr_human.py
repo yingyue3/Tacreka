@@ -267,7 +267,7 @@ class Tacreka_SR:
                 if not result["success"]:
                     user_feedback_prompt_rw_gen = FEATURE_AS_ONE_FAILURE_FEEDBACK_PROMPT.format(traceback_msg=result["exception"])
                     user_feedback_prompt = "N"
-                    print("Failed to generate correct reward function, using previous feedback prompt")
+                    print("Failed to generate correct reward function, no video recorded.")
                 else:
                     # Compute the performance metrics
                     print("Successfully generated reward function, generating task feedback")
