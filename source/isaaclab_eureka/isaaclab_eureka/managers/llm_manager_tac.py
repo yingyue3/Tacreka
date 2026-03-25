@@ -2,11 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import os
 import re
 import json
 
-import openai
+from ._llm_request_utils import (
+    build_openai_client,
+    create_chat_completion,
+    get_llm_request_settings,
+)
 
 
 class LLMManagerTac:
@@ -31,16 +34,17 @@ class LLMManagerTac:
         """
 
         self._gpt_model = gpt_model
+        self._num_suggestions = 1
         self._temperature = temperature
         self._prompts = [{"role": "system", "content": system_prompt}]
         self._feature_prompts = [{"role": "system", "content": feature_prompt}]
         self._single_feature_reward_generation_prompts = [{"role": "system", "content": system_prompt}]
-        if "AZURE_OPENAI_API_KEY" in os.environ:
-            self._client = openai.AzureOpenAI(api_version="2024-02-01")
-        elif "OPENAI_API_KEY" in os.environ:
-            self._client = openai.OpenAI()
-        else:
-            raise RuntimeError("No Openai API key found in environment variables")
+        (
+            self._request_timeout_seconds,
+            self._max_request_retries,
+            self._retry_backoff_seconds,
+        ) = get_llm_request_settings()
+        self._client = build_openai_client(timeout_seconds=self._request_timeout_seconds)
 
     def extract_code_from_response(self, response: str) -> str:
         """Extract the code component from the LLM response
@@ -150,12 +154,17 @@ class LLMManagerTac:
             self._feature_prompts.pop(2)
             self._feature_prompts.pop(2)
         try:
-            responses = self._client.chat.completions.create(
+            responses = create_chat_completion(
+                self._client,
                 model=self._gpt_model,
                 messages=self._feature_prompts,
                 temperature=self._temperature,
                 n=num_suggestion,
                 response_format=response_format,
+                timeout_seconds=self._request_timeout_seconds,
+                max_request_retries=self._max_request_retries,
+                retry_backoff_seconds=self._retry_backoff_seconds,
+                request_name="LLMManagerTac.feature_gen",
             )
         except Exception as e:
             raise RuntimeError("An error occurred while prompting the LLM") from e
@@ -194,11 +203,16 @@ class LLMManagerTac:
             self._prompts.pop(2)
 
         try:
-            responses = self._client.chat.completions.create(
+            responses = create_chat_completion(
+                self._client,
                 model=self._gpt_model,
                 messages=self._prompts,
                 temperature=self._temperature,
                 n=self._num_suggestions,
+                timeout_seconds=self._request_timeout_seconds,
+                max_request_retries=self._max_request_retries,
+                retry_backoff_seconds=self._retry_backoff_seconds,
+                request_name="LLMManagerTac.prompt",
             )
         except Exception as e:
             raise RuntimeError("An error occurred while prompting the LLM") from e
@@ -231,11 +245,16 @@ class LLMManagerTac:
             # self._single_feature_reward_generation_prompts.pop(2)
 
         try:
-            responses = self._client.chat.completions.create(
+            responses = create_chat_completion(
+                self._client,
                 model=self._gpt_model,
                 messages=self._single_feature_reward_generation_prompts,
                 temperature=self._temperature,
                 n=num_suggestion,
+                timeout_seconds=self._request_timeout_seconds,
+                max_request_retries=self._max_request_retries,
+                retry_backoff_seconds=self._retry_backoff_seconds,
+                request_name="LLMManagerTac.single_feature_prompt",
             )
         except Exception as e:
             raise RuntimeError("An error occurred while prompting the LLM") from e
@@ -250,5 +269,3 @@ class LLMManagerTac:
     
     def single_feature_reset(self):
         self._single_feature_reward_generation_prompts = []
-
-

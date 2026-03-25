@@ -135,13 +135,42 @@ def _render_quadcopter_frame(
     image = Image.new("RGB", (width, height), (246, 247, 250))
     draw = ImageDraw.Draw(image)
 
-    left_panel = (30, 70, width // 2 - 20, height - 40)
-    right_panel = (width // 2 + 20, 70, width - 30, height - 40)
+    status = "DONE" if done else "RUN"
+    status_color = (173, 25, 25) if done else (32, 32, 32)
+    text_lines = [
+        f"status={status} frame={frame_idx} episode={episode_idx} step={episode_step}",
+        f"pos_w=({pos_w[0]:+.2f}, {pos_w[1]:+.2f}, {pos_w[2]:+.2f})",
+        f"goal_w=({desired_w[0]:+.2f}, {desired_w[1]:+.2f}, {desired_w[2]:+.2f}) dist={distance_to_goal:.3f}",
+        f"lin_vel_b=({lin_vel_b[0]:+.2f}, {lin_vel_b[1]:+.2f}, {lin_vel_b[2]:+.2f})",
+        f"ang_vel_b=({ang_vel_b[0]:+.2f}, {ang_vel_b[1]:+.2f}, {ang_vel_b[2]:+.2f}) reward={reward:+.3f}",
+    ]
+
+    telemetry_pad_x = 12
+    telemetry_pad_y = 10
+    telemetry_line_height = 18
+    telemetry_top = 12
+    telemetry_box = (
+        20,
+        telemetry_top,
+        width - 20,
+        telemetry_top + telemetry_pad_y * 2 + telemetry_line_height * len(text_lines) - 4,
+    )
+    draw.rectangle(telemetry_box, fill=(252, 252, 253), outline=(188, 194, 204), width=1)
+
+    y = telemetry_box[1] + telemetry_pad_y
+    for line in text_lines:
+        draw.text((telemetry_box[0] + telemetry_pad_x, y), line, fill=status_color)
+        y += telemetry_line_height
+
+    title_y = telemetry_box[3] + 12
+    panel_top = title_y + 24
+    left_panel = (30, panel_top, width // 2 - 20, height - 40)
+    right_panel = (width // 2 + 20, panel_top, width - 30, height - 40)
 
     draw.rectangle(left_panel, outline=(86, 94, 106), width=2)
     draw.rectangle(right_panel, outline=(86, 94, 106), width=2)
-    draw.text((left_panel[0], 30), "Top-down (x-y)", fill=(30, 30, 30))
-    draw.text((right_panel[0], 30), "Side view (x-z)", fill=(30, 30, 30))
+    draw.text((left_panel[0], title_y), "Top-down (x-y)", fill=(30, 30, 30))
+    draw.text((right_panel[0], title_y), "Side view (x-z)", fill=(30, 30, 30))
 
     xy_bounds = _compute_bounds_2d(
         [(pos_w[0], pos_w[1]), (desired_w[0], desired_w[1])]
@@ -165,20 +194,6 @@ def _render_quadcopter_frame(
     dx, dz = _project_to_panel(pos_w[0], pos_w[2], z_bounds, right_panel)
     r = 8
     draw.ellipse([dx - r, dz - r, dx + r, dz + r], fill=(38, 132, 255), outline=(10, 60, 120), width=2)
-
-    status = "DONE" if done else "RUN"
-    status_color = (173, 25, 25) if done else (32, 32, 32)
-    text_lines = [
-        f"status={status} frame={frame_idx} episode={episode_idx} step={episode_step}",
-        f"pos_w=({pos_w[0]:+.2f}, {pos_w[1]:+.2f}, {pos_w[2]:+.2f})",
-        f"goal_w=({desired_w[0]:+.2f}, {desired_w[1]:+.2f}, {desired_w[2]:+.2f}) dist={distance_to_goal:.3f}",
-        f"lin_vel_b=({lin_vel_b[0]:+.2f}, {lin_vel_b[1]:+.2f}, {lin_vel_b[2]:+.2f})",
-        f"ang_vel_b=({ang_vel_b[0]:+.2f}, {ang_vel_b[1]:+.2f}, {ang_vel_b[2]:+.2f}) reward={reward:+.3f}",
-    ]
-    y = 8
-    for line in text_lines:
-        draw.text((20, y), line, fill=status_color)
-        y += 18
 
     return np.asarray(image, dtype=np.uint8)
 

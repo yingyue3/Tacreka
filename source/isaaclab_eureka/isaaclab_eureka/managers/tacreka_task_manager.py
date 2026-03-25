@@ -12,6 +12,7 @@ from contextlib import nullcontext
 from datetime import datetime
 from typing import Literal
 
+from isaaclab_eureka.learning_curve_utils import export_learning_curve_artifacts, resolve_checkpoint_path
 from isaaclab_eureka.utils import MuteOutput, get_freest_gpu
 
 TEMPLATE_REWARD_STRING = """
@@ -72,6 +73,7 @@ class TacrekaTaskManager:
         video: bool = False,
         video_length: int = 200,
         video_interval: int = 2000,
+        rl_log_root_dir: str | None = None,
     ):
         """Initialize the task manager. Each process will create an independent training run.
 
@@ -83,6 +85,8 @@ class TacrekaTaskManager:
             env_seed: The seed to use for the environment.
             max_training_iterations: The maximum number of training iterations.
             success_metric_string: A string that represents an expression to calculate the success metric for the task.
+            rl_log_root_dir: Optional root directory for RL training runs. If omitted, uses the legacy
+                ``logs/rl_runs/...`` layout.
         """
         self._task = task
         self._rl_library = rl_library
@@ -94,6 +98,7 @@ class TacrekaTaskManager:
         self._video = video
         self._video_length = video_length
         self._video_interval = video_interval
+        self._rl_log_root_dir = os.path.abspath(rl_log_root_dir) if rl_log_root_dir else None
         if self._success_metric_string:
             self._success_metric_string = "extras['Eureka/success_metric'] = " + self._success_metric_string
 
@@ -142,6 +147,8 @@ class TacrekaTaskManager:
             keys:
                 - "success": True if the training was successful, False otherwise.
                 - "log_dir": The directory where the training logs are stored if the training succeeded.
+                - "run_dir": The root directory of the training run if the training succeeded.
+                - "checkpoint_file": The latest checkpoint file if one was produced.
                 - "exception": The exception message if the training failed.
         """
         if len(get_rewards_method_as_string) != self._num_processes:
@@ -189,7 +196,21 @@ class TacrekaTaskManager:
                     with context:
                         # Run training and send result to main process
                         self._run_training()
-                    result = {"success": True, "log_dir": self._log_dir}
+                    result = {"success": True, "log_dir": self._log_dir, "run_dir": self._run_dir}
+                    checkpoint_file = resolve_checkpoint_path(self._run_dir)
+                    if checkpoint_file is not None:
+                        result["checkpoint_file"] = checkpoint_file
+                    try:
+                        learning_curve_dir = os.path.join(self._run_dir, "learning_curves")
+                        learning_curve = export_learning_curve_artifacts(
+                            self._log_dir,
+                            output_dir=learning_curve_dir,
+                            run_name=os.path.basename(self._run_dir),
+                        )
+                        if learning_curve is not None:
+                            result["learning_curve"] = learning_curve
+                    except Exception as plot_error:
+                        result["learning_curve_error"] = str(plot_error)
                 except Exception as e:
                     result = {"success": False, "exception": str(e)}
                     print(traceback.format_exc())
@@ -295,20 +316,28 @@ class TacrekaTaskManager:
             agent_cfg.device = self._device
             agent_cfg.max_iterations = self._max_training_iterations
 
-            log_root_path = os.path.join("logs", "rl_runs", "rsl_rl_eureka", agent_cfg.experiment_name)
+            if self._rl_log_root_dir:
+                log_root_path = self._rl_log_root_dir
+            else:
+                log_root_path = os.path.join("logs", "rl_runs", "rsl_rl_eureka", agent_cfg.experiment_name)
             log_root_path = os.path.abspath(log_root_path)
+            os.makedirs(log_root_path, exist_ok=True)
             print(f"[INFO] Logging experiment in directory: {log_root_path}")
             # specify directory for logging runs: {time-stamp}_{run_name}
             log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + f"_Run-{self._idx}"
+            if self._rl_log_root_dir:
+                experiment_name = str(agent_cfg.experiment_name).replace(os.sep, "_").replace(" ", "_")
+                log_dir = f"rsl_rl_{experiment_name}_{log_dir}"
             if agent_cfg.run_name:
                 log_dir += f"_{agent_cfg.run_name}"
-            self._log_dir = os.path.join(log_root_path, log_dir)
+            self._run_dir = os.path.join(log_root_path, log_dir)
+            self._log_dir = self._run_dir
 
             # Wrap for video recording if enabled
             if self._video:
                 import gymnasium as gym
                 video_kwargs = {
-                    "video_folder": os.path.join(self._log_dir, "videos", "train"),
+                    "video_folder": os.path.join(self._run_dir, "videos", "train"),
                     "step_trigger": lambda step: step % self._video_interval == 0,
                     "video_length": self._video_length,
                     "disable_logger": True,
@@ -334,20 +363,28 @@ class TacrekaTaskManager:
             agent_cfg["params"]["config"]["device"] = self._device
             agent_cfg["params"]["config"]["device_name"] = self._device
             # specify directory for logging experiments
-            log_root_path = os.path.join("logs", "rl_runs", "rl_games_eureka", agent_cfg["params"]["config"]["name"])
+            if self._rl_log_root_dir:
+                log_root_path = self._rl_log_root_dir
+            else:
+                log_root_path = os.path.join("logs", "rl_runs", "rl_games_eureka", agent_cfg["params"]["config"]["name"])
             log_root_path = os.path.abspath(log_root_path)
+            os.makedirs(log_root_path, exist_ok=True)
             print(f"[INFO] Logging experiment in directory: {log_root_path}")
             # specify directory for logging runs
             log_dir = (
                 agent_cfg["params"]["config"].get("full_experiment_name", datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
                 + f"_Run-{self._idx}"
             )
+            if self._rl_log_root_dir:
+                experiment_name = str(agent_cfg["params"]["config"]["name"]).replace(os.sep, "_").replace(" ", "_")
+                log_dir = f"rl_games_{experiment_name}_{log_dir}"
             # set directory into agent config
             # logging directory path: <train_dir>/<full_experiment_name>
             agent_cfg["params"]["config"]["train_dir"] = log_root_path
             agent_cfg["params"]["config"]["full_experiment_name"] = log_dir
             # Update the log directory to the tensorboard file
-            self._log_dir = os.path.join(log_root_path, log_dir, "summaries")
+            self._run_dir = os.path.join(log_root_path, log_dir)
+            self._log_dir = os.path.join(self._run_dir, "summaries")
             clip_obs = agent_cfg["params"]["env"].get("clip_observations", math.inf)
             clip_actions = agent_cfg["params"]["env"].get("clip_actions", math.inf)
             env = RlGamesVecEnvWrapper(self._env, self._device, clip_obs, clip_actions)
