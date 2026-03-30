@@ -262,6 +262,39 @@ Please analyze each existing reward component in the suggested manner above firs
 Features to implement (refined): {FEATURES_JSON}
 """ + DIRECT_WORKFLOW_REWARD_FORMATTING_INSTRUCTIONS
 
+HUMAN_RANKING_FEATURE_REFINEMENT_PROMPT = """
+Please carefully analyze the policy feedback and provide a new reward feature decomposition that sets the training results as close as possible to the desired task score.
+A human observer watched the trained robot policy and ranked the reward features from MOST important to LEAST important based on how much each feature contributes to meaningful, desirable behavior.
+
+Human feature ranking (index 1 = most important, last index = least important):
+{ranked_feature_list}
+
+Training performance feedback:
+{eureka_task_feedback}
+
+Your task is to produce a refined feature set by applying the following rules derived from the human ranking:
+
+RULE 1 — DROP the lowest-ranked feature.
+  The human judged it least relevant to good behavior. Remove it entirely from the feature set.
+  Exception: if only 2 features remain, keep all and only adjust weights instead of dropping.
+
+RULE 2 — AMPLIFY the highest-ranked feature.
+  Multiply its weight by a factor between 1.5× and 3.0×, choosing based on how poorly the
+  task is being solved (use a larger multiplier when task_score is far from the desired value).
+  Do NOT increase the weight beyond a point where it would numerically dominate all others combined.
+
+RULE 3 — PRESERVE the mid-ranked features.
+  Keep their feature_name, intent, measurable_signals, proxy_metric, and desired_direction unchanged.
+  You MAY slightly adjust their weights to keep the total weight sum in the original ballpark (within 2×).
+
+RULE 4 — VALIDATE signal quality.
+  For any retained feature, verify:
+  (a) Its measurable_signals exist in the environment observation method.
+  (b) Its proxy_metric produces a signal that varies meaningfully between good and bad agent states.
+  (c) It does NOT use torch.norm(projected_gravity_b) as an uprightness proxy (use projected_gravity_b[:, 2] instead).
+  If a retained feature fails validation, fix the proxy_metric or replace the feature with a corrected one.
+""" + FEATURE_GEN_FORMATTING_PROMPT
+
 DECOMPOSE_REWARD_PROMPT = """
 You are a reward engineer for reinforcement learning.
 Goal: Implement ONE reward component for ONE specific feature of an IsaacLab RL task. This reward will later be combined with other components in a weighted sum, so it must be well-scaled and interpretable.
