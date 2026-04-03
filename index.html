@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Human Feedback - Comparison</title>
+    <title>Human Feedback - Reward Comparison</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
@@ -372,29 +372,24 @@
 </head>
 <body>
     <h1>Human Feedback Required</h1>
-    <p class="subtitle">Review the options and select your preferred one</p>
+    <p class="subtitle">Review the reward functions and select your preferred option</p>
     
     
             <div class="task-info">
                 <h2>Task Description</h2>
-                <p>Quadcopter hover task: The drone should reach and maintain a stable position at the target location while minimizing oscillations and energy consumption.</p>
+                <p>bring the quadcopter to the target position: self._desired_pos_w, while making sure it flies smoothly</p>
             </div>
             
     
     <div class="container" id="video-container">
         
             <div class="video-card" id="card-0">
-                <h3>Reward v1 (Multi-objective)</h3>
+                <h3>Option 1</h3>
                 
-                    <div class="no-video">
-                        <span class="no-video-icon">🎬</span>
-                        <p>No video available</p>
-                    </div>
-                    
                 
         <div class="reward-info-container">
-            <h4 class="reward-title">Feature-based Reward v1</h4>
-            <p class="reward-desc">Multi-objective reward combining position error, velocity control, and orientation stability.</p>
+            <h4 class="reward-title">Run 1</h4>
+            
         <div class="feature-specs-section">
             <h4 onclick="toggleSection('features-0')" class="section-toggle">
                 Feature Specifications <span class="toggle-icon" id="icon-features-0">▼</span>
@@ -404,13 +399,13 @@
             <div class="feature-card">
                 <div class="feature-header">
                     <span class="feature-name">position_error</span>
-                    <span class="feature-weight">weight: 1.0</span>
+                    <span class="feature-weight">weight: 13.5</span>
                     <span class="feature-direction" style="color: #f87171;">
                         ↓ minimize
                     </span>
                 </div>
                 <div class="feature-intent">
-                    <strong>Intent:</strong> Encourage the agent to minimize the distance to the target position.
+                    <strong>Intent:</strong> Encourage the quadcopter to minimize the distance to the target position.
                 </div>
                 <div class="feature-details">
                     <div class="detail-row">
@@ -423,85 +418,59 @@
                     </div>
                 </div>
                 <div class="feature-failure">
-                    <strong>Failure mode:</strong> The agent could hover in place near the target without considering smooth flight.
+                    <strong>Failure mode:</strong> An agent could hover at a constant distance from the target without making progress toward it.
                 </div>
             </div>
             
             <div class="feature-card">
                 <div class="feature-header">
                     <span class="feature-name">linear_velocity</span>
-                    <span class="feature-weight">weight: 0.5</span>
-                    <span class="feature-direction" style="color: #4ade80;">
-                        ↑ maximize
+                    <span class="feature-weight">weight: 0.4</span>
+                    <span class="feature-direction" style="color: #f87171;">
+                        ↓ minimize
                     </span>
                 </div>
                 <div class="feature-intent">
-                    <strong>Intent:</strong> Encourage the agent to maintain a suitable forward speed toward the target.
+                    <strong>Intent:</strong> Promote smooth and controlled linear movements during flight.
                 </div>
                 <div class="feature-details">
                     <div class="detail-row">
                         <span class="detail-label">Signals:</span>
-                        <code>root_lin_vel_b</code>
+                        <code>self._robot.data.root_lin_vel_b</code>
                     </div>
                     <div class="detail-row">
                         <span class="detail-label">Metric:</span>
-                        <code>torch.norm(root_lin_vel_b)</code>
+                        <code>torch.norm(self._robot.data.root_lin_vel_b)</code>
                     </div>
                 </div>
                 <div class="feature-failure">
-                    <strong>Failure mode:</strong> The agent could reach high speeds with abrupt movements, sacrificing smoothness.
+                    <strong>Failure mode:</strong> An agent could move quickly toward the target but in an erratic manner, leading to instability.
                 </div>
             </div>
             
             <div class="feature-card">
                 <div class="feature-header">
                     <span class="feature-name">angular_velocity</span>
-                    <span class="feature-weight">weight: 0.5</span>
+                    <span class="feature-weight">weight: 0.4</span>
                     <span class="feature-direction" style="color: #f87171;">
                         ↓ minimize
                     </span>
                 </div>
                 <div class="feature-intent">
-                    <strong>Intent:</strong> Promote smooth rotational movements of the quadcopter for stable flight.
+                    <strong>Intent:</strong> Discourage excessive rotations for stable flight.
                 </div>
                 <div class="feature-details">
                     <div class="detail-row">
                         <span class="detail-label">Signals:</span>
-                        <code>root_ang_vel_b</code>
+                        <code>self._robot.data.root_ang_vel_b</code>
                     </div>
                     <div class="detail-row">
                         <span class="detail-label">Metric:</span>
-                        <code>torch.norm(root_ang_vel_b)</code>
+                        <code>torch.norm(self._robot.data.root_ang_vel_b)</code>
                     </div>
                 </div>
                 <div class="feature-failure">
-                    <strong>Failure mode:</strong> The agent could move quickly in terms of angle but end up making jerky, unstable movements.
-                </div>
-            </div>
-            
-            <div class="feature-card">
-                <div class="feature-header">
-                    <span class="feature-name">gravity_projection</span>
-                    <span class="feature-weight">weight: 0.5</span>
-                    <span class="feature-direction" style="color: #4ade80;">
-                        ↑ maximize
-                    </span>
-                </div>
-                <div class="feature-intent">
-                    <strong>Intent:</strong> Ensure that the quadcopter maintains stable flight orientation relative to gravity.
-                </div>
-                <div class="feature-details">
-                    <div class="detail-row">
-                        <span class="detail-label">Signals:</span>
-                        <code>projected_gravity_b</code>
-                    </div>
-                    <div class="detail-row">
-                        <span class="detail-label">Metric:</span>
-                        <code>abs(projected_gravity_b[2])</code>
-                    </div>
-                </div>
-                <div class="feature-failure">
-                    <strong>Failure mode:</strong> The agent might ignore orientation and achieve projected gravity values only by tilting sharply.
+                    <strong>Failure mode:</strong> An agent may oscillate by applying large rotations, appearing unstable while still reaching the target.
                 </div>
             </div>
             
@@ -516,17 +485,12 @@
             </div>
             
             <div class="video-card" id="card-1">
-                <h3>Reward v2 (Simplified)</h3>
+                <h3>Option 2</h3>
                 
-                    <video controls preload="metadata">
-                        <source src="quad_tac_71.mp4" type="video/mp4">
-                        Your browser does not support video.
-                    </video>
-                    
                 
         <div class="reward-info-container">
-            <h4 class="reward-title">Simplified Reward v2</h4>
-            <p class="reward-desc">Simplified reward focusing on goal-reaching with stability bonus.</p>
+            <h4 class="reward-title">Run 2</h4>
+            
         <div class="feature-specs-section">
             <h4 onclick="toggleSection('features-1')" class="section-toggle">
                 Feature Specifications <span class="toggle-icon" id="icon-features-1">▼</span>
@@ -535,14 +499,14 @@
                 
             <div class="feature-card">
                 <div class="feature-header">
-                    <span class="feature-name">distance_to_goal</span>
-                    <span class="feature-weight">weight: 2.0</span>
-                    <span class="feature-direction" style="color: #4ade80;">
-                        ↑ maximize
+                    <span class="feature-name">position_error</span>
+                    <span class="feature-weight">weight: 7.0</span>
+                    <span class="feature-direction" style="color: #f87171;">
+                        ↓ minimize
                     </span>
                 </div>
                 <div class="feature-intent">
-                    <strong>Intent:</strong> Minimize distance between quadcopter and target position.
+                    <strong>Intent:</strong> Encourage the quadcopter to minimize the distance to the target position.
                 </div>
                 <div class="feature-details">
                     <div class="detail-row">
@@ -551,37 +515,63 @@
                     </div>
                     <div class="detail-row">
                         <span class="detail-label">Metric:</span>
-                        <code>1.0 / (1.0 + torch.norm(desired_pos_b))</code>
+                        <code>torch.norm(desired_pos_b)</code>
                     </div>
                 </div>
                 <div class="feature-failure">
-                    <strong>Failure mode:</strong> May cause aggressive movements towards goal.
+                    <strong>Failure mode:</strong> An agent could hover at a constant distance from the target without making progress toward it.
                 </div>
             </div>
             
             <div class="feature-card">
                 <div class="feature-header">
-                    <span class="feature-name">stability_bonus</span>
+                    <span class="feature-name">linear_velocity</span>
                     <span class="feature-weight">weight: 1.0</span>
-                    <span class="feature-direction" style="color: #4ade80;">
-                        ↑ maximize
+                    <span class="feature-direction" style="color: #f87171;">
+                        ↓ minimize
                     </span>
                 </div>
                 <div class="feature-intent">
-                    <strong>Intent:</strong> Reward stable hover with minimal oscillation.
+                    <strong>Intent:</strong> Promote smoother and controlled linear movements during flight to avoid erratic behavior.
                 </div>
                 <div class="feature-details">
                     <div class="detail-row">
                         <span class="detail-label">Signals:</span>
-                        <code>root_ang_vel_b, root_lin_vel_b</code>
+                        <code>self._robot.data.root_lin_vel_b</code>
                     </div>
                     <div class="detail-row">
                         <span class="detail-label">Metric:</span>
-                        <code>exp(-torch.norm(root_ang_vel_b) - 0.5 * torch.norm(root_lin_vel_b))</code>
+                        <code>torch.tanh(torch.norm(self._robot.data.root_lin_vel_b))</code>
                     </div>
                 </div>
                 <div class="feature-failure">
-                    <strong>Failure mode:</strong> Could prioritize stability over reaching the goal.
+                    <strong>Failure mode:</strong> An agent might still move quickly toward the target but in an erratic manner, leading to instability.
+                </div>
+            </div>
+            
+            <div class="feature-card">
+                <div class="feature-header">
+                    <span class="feature-name">angular_velocity</span>
+                    <span class="feature-weight">weight: 1.0</span>
+                    <span class="feature-direction" style="color: #f87171;">
+                        ↓ minimize
+                    </span>
+                </div>
+                <div class="feature-intent">
+                    <strong>Intent:</strong> Discourage excessive rotations for stable and smooth flight performance.
+                </div>
+                <div class="feature-details">
+                    <div class="detail-row">
+                        <span class="detail-label">Signals:</span>
+                        <code>self._robot.data.root_ang_vel_b</code>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Metric:</span>
+                        <code>torch.tanh(torch.norm(self._robot.data.root_ang_vel_b))</code>
+                    </div>
+                </div>
+                <div class="feature-failure">
+                    <strong>Failure mode:</strong> An agent may oscillate by applying large rotations, appearing unstable while still reaching the target.
                 </div>
             </div>
             

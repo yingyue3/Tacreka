@@ -36,6 +36,12 @@ from isaaclab_eureka.config import (
 )
 from isaaclab_eureka.managers import EurekaTaskManager, LLMManagerTac, RecordManagerQuad
 from isaaclab_eureka.utils import load_tensorboard_logs
+from isaaclab_eureka.managers.feedback_manager import (
+    HumanFeedbackManager, 
+    RewardInfo, 
+    FeatureSpec
+)
+
 
 
 class Tacreka_Preference:
@@ -132,6 +138,9 @@ class Tacreka_Preference:
             num_episodes=1,
         )
 
+        print("[INFO]: Setting up the Feedback Manager...")
+        self._feedback_manager = HumanFeedbackManager(port=8889)
+
         # We import here because doing this before launching Kit causes GLIBCXX errors
         from torch.utils.tensorboard import SummaryWriter as TensorboardSummaryWriter
 
@@ -209,8 +218,8 @@ class Tacreka_Preference:
             else:
                 feature_gen_outputs_explore = self._llm_manager.feature_gen(user_prompt=feature_gen_prompt + FEATURE_GEN_EXPLORE_FEEDBACK_PROMPT, assistant_prompt=assistant_prompt, num_suggestion=1)
                 feature_gen_outputs_exploit = self._llm_manager.feature_gen(user_prompt=feature_gen_prompt + FEATURE_GEN_EXPLOIT_FEEDBACK_PROMPT, assistant_prompt=assistant_prompt, num_suggestion=1)
-                feature_gen_outputs["raw_outputs"] = [feature_gen_outputs_explore["raw_outputs"][0], feature_gen_outputs_exploit["raw_outputs"][0], assistant_prompt]
-                feature_gen_outputs["feature_strings"] = [feature_gen_outputs_explore["feature_strings"][0], feature_gen_outputs_exploit["feature_strings"][0], self._llm_manager.extract_json_from_response(assistant_prompt)]
+                feature_gen_outputs["raw_outputs"] = [assistant_prompt, feature_gen_outputs_exploit["raw_outputs"][0], feature_gen_outputs_explore["raw_outputs"][0]]
+                feature_gen_outputs["feature_strings"] = [self._llm_manager.extract_json_from_response(assistant_prompt), feature_gen_outputs_exploit["feature_strings"][0], feature_gen_outputs_explore["feature_strings"][0]]
                 feature_strings = feature_gen_outputs["feature_strings"]
                 print(f"\n{'+' * 20} 1 Feature Reused, 2 Features Generated {'+' * 20} \n")
             # else:
@@ -267,41 +276,42 @@ class Tacreka_Preference:
             best_run_idx = 0
             best_reward_components = 0
             best_run_feature_components = None
+            best_run_checkpoint = None
             print("+"*10 + " Training Ends, Evaluating Results" + "+"*10)
             for idx, result in enumerate(results):
-                feedback = None
+                feedback_result = None
+                checkpoint_list = []
 
                 # Human provide feedback for the best feature sets
                 feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
                     # # print(f"feature_idx: {feature_idx}")
                 results[idx]["reward_components"] = feature_gen_outputs["feature_strings"][feature_idx]
-                if best_run_feature_components is None:
-                    best_run_feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
-                    best_run_feature_components = feature_gen_outputs["feature_strings"][best_run_feature_idx]
-                else:
-                    print("Please provide feedback for the best feature sets")
-                    print("1. Press 1 if the run 1 is preferred")
-                    print("2. Press 2 if the run 2 is preferred")
-                    print("+"*10 + " Run 1 " + "+"*10)
-                    feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
-                    print("++++++ feature components ++++++") 
-                    feature_components = feature_gen_outputs["feature_strings"][feature_idx]
-                    print(json.dumps(feature_components, indent=2, default=str))
-                    print("+"*10 + " Run 2 " + "+"*10)
-                    feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
-                    print("++++++ feature components ++++++") 
-                    print(json.dumps(best_run_feature_components, indent=2, default=str))
-                    feedback = input("Enter your feedback: ")
+                    # print("Please provide feedback for the best feature sets")
+                    # print("1. Press 1 if the run 1 is preferred")
+                    # print("2. Press 2 if the run 2 is preferred")
+                    # print("+"*10 + " Run 1 " + "+"*10)
+                    # feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
+                    # print("++++++ feature components ++++++") 
+                    # feature_components = feature_gen_outputs["feature_strings"][feature_idx]
+                    # print(json.dumps(feature_components, indent=2, default=str))
+                    # print("+"*10 + " Run 2 " + "+"*10)
+                    # feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
+                    # print("++++++ feature components ++++++") 
+                    # print(json.dumps(best_run_feature_components, indent=2, default=str))
+                    # feedback = input("Enter your feedback: ")
                             
                 # Human provide feedback for videos     
                 if not result["success"]:
+                    checkpoint_list.append("NONE")
                     user_feedback_prompt_rw_gen = FEATURE_AS_ONE_FAILURE_FEEDBACK_PROMPT.format(traceback_msg=result["exception"])
                     user_feedback_prompt = "N"
                     print("Failed to generate correct reward function, no video recorded.")
-                    if feedback == "1":
-                        best_reward_components = idx
-                        best_run_feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
-                        best_run_feature_components = feature_gen_outputs["raw_outputs"][best_run_feature_idx]
+                    if iter_best_success_metric is None:
+                        best_run_checkpoint = "NONE"
+                        new_run_checkpoint = "NONE"
+                    else:
+                        new_run_checkpoint = "NONE"
+
                 else:
                     # Compute the performance metrics
                     print("Successfully trained the reward function, generating videos")
@@ -327,19 +337,11 @@ class Tacreka_Preference:
                     if success_metric_max is not None:
                         if iter_best_success_metric is None:
                             iter_best_success_metric = success_metric_max
-                            best_run_idx = idx
-                            print("No best feature sets found, setting current run as the best")
-                            ## check if this works
-                            best_run_checkpoint = result.get("checkpoint_file") or resolve_checkpoint_path(
-                                result.get("run_dir", result["log_dir"])
-                            )
-                            self._record_manager.record(checkpoint=best_run_checkpoint, output_file="./ratings/run_2.mp4")
-                        else:
-                            print("Video recording takes effect...")
-                            new_run_checkpoint = result.get("checkpoint_file") or resolve_checkpoint_path(
-                                result.get("run_dir", result["log_dir"])
-                            )
-                            self._record_manager.record(checkpoint=new_run_checkpoint, output_file=f"./ratings/run_1.mp4")
+                        new_run_checkpoint = result.get("checkpoint_file") or resolve_checkpoint_path(
+                            result.get("run_dir", result["log_dir"])
+                        )
+                        self._record_manager.record(checkpoint=new_run_checkpoint, output_file="./ratings/run_1.mp4")
+                        checkpoint_list.append("./ratings/run_1.mp4")
                         if best_run_results["success_metric"] is None or (
                         np.abs(iter_best_success_metric - self._success_metric_to_win)
                         < np.abs(best_run_results["success_metric"] - self._success_metric_to_win)
@@ -349,6 +351,7 @@ class Tacreka_Preference:
                                 best_run_results["reward_correlation"] = rewards_correlation
                                 best_run_results["task_feedback"] = eureka_task_feedback
                                 best_run_results["feature_idx"] = gpt_reward_method_strings[idx]["feature_idx"]
+                                best_run_feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
                                 best_run_results["feature_components"] = feature_gen_outputs["raw_outputs"][best_run_feature_idx]
                                 best_run_results["gpt_reward_method"] = gpt_reward_method_strings[idx]["reward_strings"]
                                 best_run_results["training_log_dir"] = result.get("log_dir")
@@ -358,19 +361,49 @@ class Tacreka_Preference:
                                 )
                                 best_run_results["learning_curve"] = result.get("learning_curve")
                                 print("logging best metric")
-                    if feedback is not None:
-                        print("Now Provided with videos of the two reward sets, please revise your preference on the best feature sets")
-                        print("1. Press 1 if the run 1 is preferred")
-                        print("2. Press 2 if the run 2 is preferred")
-                        input_feedback = input("Enter your feedback: ")
-                        if input_feedback == "1":
-                                best_reward_components = idx
-                                best_run_feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
-                                best_run_feature_components = feature_gen_outputs["raw_outputs"][best_run_feature_idx]
-                                iter_best_success_metric = success_metric_max
-                                best_run_idx = idx
-                                os.rename("./ratings/run_1.mp4", "./ratings/run_2.mp4")
-                   
+
+                if best_run_feature_components is None:
+                    best_run_feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
+                    best_run_feature_components = feature_gen_outputs["feature_strings"][best_run_feature_idx]
+                    best_run_checkpoint = new_run_checkpoint
+                    if best_run_checkpoint != "NONE":
+                        os.rename("./ratings/run_1.mp4", "./ratings/run_2.mp4")
+                else:
+                    reward_info_v1 = RewardInfo(
+                    name="Run 1",
+                    feature_specs=feature_gen_outputs["feature_strings"][feature_idx],
+                    )
+                    reward_info_v2 = RewardInfo(
+                    name="Run 2",
+                    feature_specs=best_run_feature_components)
+                    feedback_result = self._feedback_manager.select_video(
+                        task_description=self._task_description,
+                        reward_infos=[reward_info_v1, reward_info_v2],
+                        allow_text_feedback=False,
+                        allow_rating=False,
+                    )
+
+                    print("Video Feedback Gathering Process Started...")
+                
+                    if best_run_checkpoint == "NONE":
+                        checkpoint_list.append("NONE")
+                    else:
+                        checkpoint_list.append("./ratings/run_2.mp4")
+                    feedback_result = self._feedback_manager.select_video(
+                        video_paths=checkpoint_list,
+                        task_description="Now provided with videos of the two reward sets, please revise your preference on the best feature sets",
+                        reward_infos=[reward_info_v1, reward_info_v2],
+                        allow_text_feedback=False,
+                        allow_rating=False,
+                    )
+                    if feedback_result.selected_index == 0:
+                        best_reward_components = idx
+                        best_run_feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
+                        best_run_feature_components = feature_gen_outputs["feature_strings"][best_run_feature_idx]
+                        iter_best_success_metric = success_metric_max
+                        best_run_idx = idx
+                        os.rename("./ratings/run_1.mp4", "./ratings/run_2.mp4")
+
                 # Add the prompts
                 feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
                 results[idx]["user_prompt"] = user_feedback_prompt

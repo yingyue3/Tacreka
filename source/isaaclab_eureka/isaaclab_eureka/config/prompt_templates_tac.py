@@ -266,17 +266,22 @@ HUMAN_RANKING_FEATURE_REFINEMENT_PROMPT = """
 Please carefully analyze the policy feedback and provide a new reward feature decomposition that sets the training results as close as possible to the desired task score.
 A human observer watched the trained robot policy and ranked the reward features from MOST important to LEAST important based on how much each feature contributes to meaningful, desirable behavior.
 
-Human feature ranking (index 1 = most important, last index = least important):
+Human feature ranking (Rank 1 = most important):
 {ranked_feature_list}
+
+Features explicitly dropped by the human (judged unhelpful or harmful):
+{dropped_feature_list}
 
 Training performance feedback:
 {eureka_task_feedback}
 
+Human textual feedback (highest priority — act on these suggestions):
+{human_feedback_section}
 Your task is to produce a refined feature set by applying the following rules derived from the human ranking:
 
-RULE 1 — DROP the lowest-ranked feature.
-  The human judged it least relevant to good behavior. Remove it entirely from the feature set.
-  Exception: if only 2 features remain, keep all and only adjust weights instead of dropping.
+RULE 1 — REMOVE all dropped features.
+  The human explicitly removed these from the ranking. Do not include them in the refined feature set.
+  Exception: if removing them would leave fewer than 2 features, keep the least-dropped one and note it.
 
 RULE 2 — AMPLIFY the highest-ranked feature.
   Multiply its weight by a factor between 1.5× and 3.0×, choosing based on how poorly the
@@ -287,8 +292,13 @@ RULE 3 — PRESERVE the mid-ranked features.
   Keep their feature_name, intent, measurable_signals, proxy_metric, and desired_direction unchanged.
   You MAY slightly adjust their weights to keep the total weight sum in the original ballpark (within 2×).
 
-RULE 4 — VALIDATE signal quality.
-  For any retained feature, verify:
+RULE 4 — ACT on human feedback.
+  If the human provided textual feedback above, treat it as the highest-priority signal.
+  Add, modify, or replace features as the human suggests, as long as they are observable from the
+  environment's observation method and produce a meaningful proxy metric.
+
+RULE 5 — VALIDATE signal quality.
+  For any retained or newly added feature, verify:
   (a) Its measurable_signals exist in the environment observation method.
   (b) Its proxy_metric produces a signal that varies meaningfully between good and bad agent states.
   (c) It does NOT use torch.norm(projected_gravity_b) as an uprightness proxy (use projected_gravity_b[:, 2] instead).

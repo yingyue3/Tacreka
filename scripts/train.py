@@ -16,7 +16,7 @@ from isaaclab_eureka.tacreka_sr_auto import Tacreka_SR
 
 def main(args_cli):
     if args_cli.baseline == "tacreka_sr":
-        tacreka = Tacreka_SR(
+        tacreka = Tacreka_Ranking(
             task=args_cli.task,
             rl_library=args_cli.rl_library,
             num_parallel_runs=args_cli.num_parallel_runs,
