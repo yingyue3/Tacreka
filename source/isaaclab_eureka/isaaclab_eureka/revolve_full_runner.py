@@ -22,7 +22,7 @@ from isaaclab_eureka.learning_curve_utils import export_learning_curve_artifacts
 from isaaclab_eureka.revolve_full.database import RevolveDatabase
 from isaaclab_eureka.revolve_full import prompts as revolve_prompts
 from isaaclab_eureka.revolve_full.human_feedback import compute_hf_scores
-from isaaclab_eureka.utils import load_tensorboard_logs
+from isaaclab_eureka.utils import summarize_tensorboard_candidate
 
 
 def _linear_decay(iteration: int, initial: float, final: float, num_iterations: int):
@@ -94,6 +94,7 @@ class RevolveFull:
         max_island_size: int = 8,
         crossover_prob: float = 0.5,
         migration_prob: float = 0.3,
+        num_reward_seeds: int = 5,
         few_shot: Optional[Dict[str, int]] = None,
         temperature_final: float = 1.0,
         use_human_feedback: bool = False,
@@ -112,6 +113,7 @@ class RevolveFull:
         self._num_generations = num_generations
         self._individuals_per_generation = individuals_per_generation
         self._few_shot = few_shot or {"mutation": 1, "crossover": 2}
+        self._num_reward_seeds = num_reward_seeds
         self._temperature_initial = temperature
         self._temperature_final = temperature_final
         self._num_islands = num_islands
@@ -150,6 +152,7 @@ class RevolveFull:
             success_metric_string=self._task_cfg.get("success_metric"),
             log_namespace="revolve_full",
             rl_log_root_dir=self._rl_runs_dir,
+            num_seeds_per_reward=num_reward_seeds,
         )
 
         self._use_wandb = use_wandb
@@ -246,23 +249,59 @@ class RevolveFull:
                 fitness = self._failure_fitness
                 feedback = ""
                 correlation = 0.0
+                success_metric_stderr = None
+                rewards_correlation_stderr = None
+                selected_seed = None
+                representative_seed = None
                 if result["success"]:
-                    feedback, success_metric_max, correlation = self._get_eureka_task_feedback(
-                        result["log_dir"], feedback_subsampling=10
+                    evaluation_summary = self._get_eureka_task_feedback(
+                        result.get("seed_log_dirs") or result["log_dir"], feedback_subsampling=10
                     )
-                    success_metric_value = success_metric_max
+                    feedback = evaluation_summary["feedback"]
+                    success_metric_value = evaluation_summary["success_metric_mean"]
+                    success_metric_stderr = evaluation_summary["success_metric_stderr"]
+                    correlation = evaluation_summary["rewards_correlation_mean"]
+                    rewards_correlation_stderr = evaluation_summary["rewards_correlation_stderr"]
+                    best_seed_index = evaluation_summary["best_seed_index"]
+                    representative_seed_index = evaluation_summary["representative_seed_index"]
+                    seed_results = result.get("seed_results", [])
+                    seed_run_dirs = result.get("seed_run_dirs", [])
+                    seed_checkpoint_files = result.get("seed_checkpoint_files", [])
+                    selected_seed_result = seed_results[best_seed_index] if best_seed_index < len(seed_results) else {}
+                    representative_seed_result = (
+                        seed_results[representative_seed_index]
+                        if representative_seed_index < len(seed_results)
+                        else {}
+                    )
+                    selected_seed = selected_seed_result.get("seed", best_seed_index)
+                    representative_seed = representative_seed_result.get("seed", representative_seed_index)
+                    result["selected_seed_run_dir"] = selected_seed_result.get(
+                        "run_dir",
+                        seed_run_dirs[best_seed_index] if best_seed_index < len(seed_run_dirs) else None,
+                    )
+                    result["selected_seed_checkpoint_file"] = selected_seed_result.get(
+                        "checkpoint_file",
+                        seed_checkpoint_files[best_seed_index] if best_seed_index < len(seed_checkpoint_files) else None,
+                    )
+                    result["seed_summaries"] = evaluation_summary["seed_summaries"]
+                    result["selected_seed"] = selected_seed
+                    result["representative_seed"] = representative_seed
                     if success_metric_value is not None:
                         fitness = self._to_evolution_fitness(success_metric_value)
                 else:
                     feedback = result.get("exception", "")
-                    success_metric_max = None
+                    success_metric_value = None
 
                 metrics_dict = {
                     "fitness": fitness,
                     "success_metric": success_metric_value,
+                    "success_metric_stderr": success_metric_stderr,
                     "rewards_correlation": correlation,
+                    "rewards_correlation_stderr": rewards_correlation_stderr,
                     "success": result["success"],
                     "operator": operator,
+                    "selected_seed": selected_seed,
+                    "representative_seed": representative_seed,
                 }
                 metrics_dicts.append(metrics_dict)
                 rew_fn_strings.append(reward_string)
@@ -271,8 +310,8 @@ class RevolveFull:
                 candidate_ids.append(f"gen{generation_id}_ctr{counter_id}_isl{island_id}")
 
                 if best_overall["fitness"] is None or (
-                    success_metric_max is not None
-                    and abs(success_metric_max - self._task_cfg["success_metric_to_win"])
+                    success_metric_value is not None
+                    and abs(success_metric_value - self._task_cfg["success_metric_to_win"])
                     < abs(best_overall["fitness"] - self._task_cfg["success_metric_to_win"])
                 ):
                     candidate_id = f"gen{generation_id}_ctr{counter_id}_isl{island_id}"
@@ -282,23 +321,33 @@ class RevolveFull:
                     fitness_file = os.path.join(
                         self._db_dir, f"island_{island_id}", "fitness_scores", f"{generation_id}_{counter_id}.txt"
                     )
-                    best_overall["fitness"] = success_metric_max
+                    best_overall["fitness"] = success_metric_value
+                    best_overall["success_metric_stderr"] = success_metric_stderr
                     best_overall["reward"] = reward_string
                     best_overall["feedback"] = feedback
                     best_overall["rewards_correlation"] = correlation
+                    best_overall["rewards_correlation_stderr"] = rewards_correlation_stderr
                     best_overall["evolution_fitness"] = fitness
                     best_overall["candidate_id"] = candidate_id
                     best_overall["candidate_generation"] = generation_id
                     best_overall["candidate_counter"] = counter_id
                     best_overall["candidate_island"] = island_id
-                    best_overall["training_log_dir"] = result.get("log_dir")
-                    best_overall["training_run_dir"] = result.get("run_dir", result.get("log_dir"))
+                    best_overall["training_log_dir"] = result.get("seed_log_dirs") or result.get("log_dir")
+                    best_overall["training_log_dirs"] = result.get("seed_log_dirs") or [result.get("log_dir")]
+                    best_overall["training_run_dir"] = (
+                        result.get("selected_seed_run_dir")
+                        or result.get("run_dir", result.get("log_dir"))
+                    )
                     best_overall["candidate_reward_file"] = reward_file
                     best_overall["candidate_fitness_file"] = fitness_file
-                    best_overall["checkpoint_file"] = result.get("checkpoint_file") or self._resolve_checkpoint_path(
-                        result.get("run_dir", result.get("log_dir"))
+                    best_overall["checkpoint_file"] = (
+                        result.get("selected_seed_checkpoint_file")
+                        or self._resolve_checkpoint_path(result.get("selected_seed_run_dir"))
                     )
                     best_overall["learning_curve"] = result.get("learning_curve")
+                    best_overall["seed_summaries"] = result.get("seed_summaries")
+                    best_overall["selected_seed"] = selected_seed
+                    best_overall["representative_seed"] = representative_seed
 
             if len(rew_fn_strings) == 0:
                 print("[WARN] No valid reward functions generated; skipping generation update.")
@@ -369,52 +418,12 @@ class RevolveFull:
 
         return max(checkpoint_paths, key=_checkpoint_step)
 
-    def _get_eureka_task_feedback(self, log_dir: str, feedback_subsampling: int) -> tuple[str, float, float]:
-        import numpy as np
-
-        data = load_tensorboard_logs(log_dir)
-        eureka_rewards_data = next((data[key] for key in data if key.endswith("Eureka/eureka_total_rewards")), None)
-        oracle_rewards_data = next((data[key] for key in data if key.endswith("Eureka/oracle_total_rewards")), None)
-        if eureka_rewards_data is None or oracle_rewards_data is None:
-            rewards_correlation = 0.0
-        else:
-            eureka_rewards = np.array(eureka_rewards_data)
-            oracle_rewards = np.array(oracle_rewards_data)
-            if eureka_rewards.ndim == 0 or oracle_rewards.ndim == 0:
-                rewards_correlation = 0.0
-            elif len(eureka_rewards) == 0 or len(oracle_rewards) == 0:
-                rewards_correlation = 0.0
-            else:
-                min_length = min(len(eureka_rewards), len(oracle_rewards))
-                rewards_correlation = np.corrcoef(eureka_rewards[:min_length], oracle_rewards[:min_length])[0, 1]
-
-        success_metric_max = None
-        total_feed_back_string = ""
-        for metric_name, metric_data in data.items():
-            if "Eureka/" in metric_name:
-                metric_data = metric_data[2:]
-                metric_name = metric_name.split("Eureka/", 1)[-1]
-                metric_min = min(metric_data) if metric_data else 0.0
-                metric_max = max(metric_data) if metric_data else 0.0
-                metric_mean = sum(metric_data) / len(metric_data) if metric_data else 0.0
-                metric_best = 0.0
-                if metric_data:
-                    metric_best = metric_data[
-                        abs(np.array(metric_data) - self._task_cfg["success_metric_to_win"]).argmin()
-                    ]
-                if metric_name == "success_metric":
-                    metric_name = "task_score"
-                    success_metric_max = metric_best
-                data_string = [f"{data:.2f}" for data in metric_data[::feedback_subsampling]]
-                feedback_string = (
-                    f"{metric_name}: {data_string}, Min: {metric_min:.2f}, Max: {metric_max:.2f}, Mean:"
-                    f" {metric_mean:.2f} \n"
-                )
-                if "Eureka/success_metric" in data and metric_name == "Eureka/oracle_total_rewards":
-                    feedback_string = ""
-                total_feed_back_string += feedback_string
-        total_feed_back_string += f"\nThe desired task_score to win is: {self._task_cfg['success_metric_to_win']:.2f}\n"
-        return total_feed_back_string, success_metric_max, rewards_correlation
+    def _get_eureka_task_feedback(self, log_dir: str | list[str], feedback_subsampling: int) -> dict:
+        return summarize_tensorboard_candidate(
+            log_dirs=log_dir,
+            feedback_subsampling=feedback_subsampling,
+            success_metric_target=self._task_cfg["success_metric_to_win"],
+        )
 
     def _log_final_results(self, best_run_results: Dict) -> None:
         output = ""
@@ -428,6 +437,7 @@ class RevolveFull:
                 best_run_results["best_learning_curve"] = best_learning_curve
         if best_run_results.get("fitness") is not None:
             output += f"- Success metric: {best_run_results['fitness']}\n"
+            output += f"- Success metric stderr: {best_run_results.get('success_metric_stderr', 0.0)}\n"
             output += f"- Best candidate id: {best_run_results.get('candidate_id', 'unknown')}\n"
             output += (
                 f"- Best candidate details: generation={best_run_results.get('candidate_generation', 'unknown')}, "
@@ -444,12 +454,17 @@ class RevolveFull:
                 f"- Best candidate reward correlation: {best_run_results.get('rewards_correlation', 'unknown')}\n"
             )
             output += (
+                f"- Best candidate reward correlation stderr: {best_run_results.get('rewards_correlation_stderr', 'unknown')}\n"
+            )
+            output += (
                 f"- Evolution fitness formula: -abs(task_score - {self._success_metric_target:.4f})\n"
             )
             output += f"- Best candidate evolution fitness: {best_run_results.get('evolution_fitness', 'unknown')}\n"
             output += f"- Best candidate training log dir: {best_run_results.get('training_log_dir', 'unknown')}\n"
             output += f"- Best candidate training run dir: {best_run_results.get('training_run_dir', 'unknown')}\n"
             output += f"- Best candidate checkpoint: {best_run_results.get('checkpoint_file', 'unknown')}\n"
+            output += f"- Selected seed: {best_run_results.get('selected_seed', 'unknown')}\n"
+            output += f"- Representative seed: {best_run_results.get('representative_seed', 'unknown')}\n"
             learning_curve_path = best_run_results.get("best_learning_curve", {}).get("plot_path", "unknown")
             output += f"- Best candidate learning curve plot: {learning_curve_path}\n"
             output += f"- GPT reward method:\n{best_run_results.get('reward')}\n"

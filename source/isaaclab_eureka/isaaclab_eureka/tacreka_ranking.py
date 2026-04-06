@@ -57,6 +57,7 @@ class Tacreka_Ranking:
         temperature: float = 1.0,
         gpt_model: str = "gpt-4",
         num_parallel_runs: int = 2,
+        num_reward_seeds: int = 1,
         use_wandb: bool = True,
         wandb_project: str = "isaaclab-eureka",
         wandb_entity: str = None,
@@ -82,6 +83,7 @@ class Tacreka_Ranking:
             wandb_name: The wandb run name. If None, uses timestamp.
         """
         self._human_feedback = human_feedback
+        self._num_reward_seeds = 1 if human_feedback else max(1, int(num_reward_seeds))
 
         # Load the task description and success metric
         if task in TASKS_CFG:
@@ -126,6 +128,7 @@ class Tacreka_Ranking:
             success_metric_string=success_metric_string,
             log_namespace="tacreka_sr",
             rl_log_root_dir=self._rl_runs_dir,
+            num_seeds_per_reward=self._num_reward_seeds,
         )
 
         print("[INFO]: Setting up the Record Manager...")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import glob
 import json
+import math
 import os
 from typing import Any
 
@@ -18,6 +19,8 @@ METRIC_MODE_ALIASES = {
     "oracle": "oracle",
     "oracle_reward": "oracle",
     "oracle_total_rewards": "oracle",
+    "success": "success",
+    "success_metric": "success",
 }
 
 
@@ -91,6 +94,8 @@ def select_plot_series_tag(series_by_tag: dict[str, dict[str, list[float]]], met
     metric_mode = normalize_metric_mode(metric)
     if metric_mode == "default":
         return select_reward_series_tag(series_by_tag)
+    if metric_mode == "success":
+        return select_success_metric_tag(series_by_tag)
 
     preferred_tags_by_metric = {
         "eureka": [
@@ -163,54 +168,115 @@ def resolve_checkpoint_path(run_dir: str | None) -> str | None:
     return max(checkpoint_paths, key=_checkpoint_sort_key)
 
 
+def _mean_and_stderr(values: list[float]) -> tuple[float | None, float | None]:
+    """Compute the mean and standard error for a sequence of scalars."""
+    if not values:
+        return None, None
+    if len(values) == 1:
+        return float(values[0]), 0.0
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+    stderr = math.sqrt(variance) / math.sqrt(len(values))
+    return float(mean), float(stderr)
+
+
 def export_learning_curve_artifacts(
-    log_dir: str,
+    log_dir: str | list[str] | tuple[str, ...],
     output_dir: str | None = None,
     run_name: str | None = None,
     metric: str = "default",
 ) -> dict[str, Any] | None:
     """Write a training-step learning curve plot plus CSV metadata."""
-    series_by_tag = load_tensorboard_scalar_series(log_dir)
+    if isinstance(log_dir, (list, tuple)):
+        normalized_log_dirs = [os.path.abspath(path) for path in log_dir]
+    else:
+        normalized_log_dirs = [os.path.abspath(log_dir)]
+
+    series_by_run = [load_tensorboard_scalar_series(path) for path in normalized_log_dirs]
     metric_mode = normalize_metric_mode(metric)
-    reward_tag = select_plot_series_tag(series_by_tag, metric=metric_mode)
+    reward_tag = None
+    for series_by_tag in series_by_run:
+        reward_tag = select_plot_series_tag(series_by_tag, metric=metric_mode)
+        if reward_tag is not None:
+            break
     if reward_tag is None:
         return None
 
-    success_tag = select_success_metric_tag(series_by_tag)
-    episode_length_tag = select_episode_length_tag(series_by_tag)
-    reward_series = series_by_tag[reward_tag]
-    output_dir = os.path.abspath(output_dir or log_dir)
+    first_series = next(series_by_tag for series_by_tag in series_by_run if reward_tag in series_by_tag)
+    success_tag = select_success_metric_tag(first_series)
+    episode_length_tag = select_episode_length_tag(first_series)
+    output_dir = os.path.abspath(output_dir or normalized_log_dirs[0])
     os.makedirs(output_dir, exist_ok=True)
 
-    reward_steps = reward_series["steps"]
-    reward_values = reward_series["values"]
+    reward_values_by_step: dict[float, list[float]] = {}
+    success_values_by_step: dict[float, list[float]] = {}
+    episode_length_values_by_step: dict[float, list[float]] = {}
+
+    for series_by_tag in series_by_run:
+        current_reward_tag = select_plot_series_tag(series_by_tag, metric=metric_mode)
+        if current_reward_tag is None or current_reward_tag not in series_by_tag:
+            continue
+
+        reward_series = series_by_tag[current_reward_tag]
+        for step, value in zip(reward_series["steps"], reward_series["values"]):
+            reward_values_by_step.setdefault(step, []).append(float(value))
+
+        if success_tag and success_tag in series_by_tag:
+            success_step_to_value = dict(zip(series_by_tag[success_tag]["steps"], series_by_tag[success_tag]["values"]))
+            for step in reward_series["steps"]:
+                if step in success_step_to_value:
+                    success_values_by_step.setdefault(step, []).append(float(success_step_to_value[step]))
+
+        if episode_length_tag and episode_length_tag in series_by_tag:
+            episode_step_to_value = dict(
+                zip(series_by_tag[episode_length_tag]["steps"], series_by_tag[episode_length_tag]["values"])
+            )
+            for step in reward_series["steps"]:
+                if step in episode_step_to_value:
+                    episode_length_values_by_step.setdefault(step, []).append(float(episode_step_to_value[step]))
+
+    reward_steps = sorted(reward_values_by_step)
+    reward_values = []
+    reward_stderr_values = []
+    reward_count_values = []
+    success_values: list[float | None] = []
+    success_stderr_values: list[float | None] = []
+    success_count_values: list[int] = []
+    episode_length_values: list[float | None] = []
+    episode_length_stderr_values: list[float | None] = []
+    episode_length_count_values: list[int] = []
+
+    for step in reward_steps:
+        reward_mean, reward_stderr = _mean_and_stderr(reward_values_by_step.get(step, []))
+        reward_values.append(reward_mean if reward_mean is not None else 0.0)
+        reward_stderr_values.append(reward_stderr if reward_stderr is not None else 0.0)
+        reward_count_values.append(len(reward_values_by_step.get(step, [])))
+
+        success_mean, success_stderr = _mean_and_stderr(success_values_by_step.get(step, []))
+        success_values.append(success_mean)
+        success_stderr_values.append(success_stderr)
+        success_count_values.append(len(success_values_by_step.get(step, [])))
+
+        episode_mean, episode_stderr = _mean_and_stderr(episode_length_values_by_step.get(step, []))
+        episode_length_values.append(episode_mean)
+        episode_length_stderr_values.append(episode_stderr)
+        episode_length_count_values.append(len(episode_length_values_by_step.get(step, [])))
+
     logged_indices = list(range(len(reward_values)))
-
-    success_values: list[float | None]
-    if success_tag and success_tag in series_by_tag:
-        success_step_to_value = dict(zip(series_by_tag[success_tag]["steps"], series_by_tag[success_tag]["values"]))
-        success_values = [success_step_to_value.get(step) for step in reward_steps]
-    else:
-        success_values = [None] * len(reward_values)
-
-    episode_length_values: list[float | None]
-    if episode_length_tag and episode_length_tag in series_by_tag:
-        episode_step_to_value = dict(
-            zip(series_by_tag[episode_length_tag]["steps"], series_by_tag[episode_length_tag]["values"])
-        )
-        episode_length_values = [episode_step_to_value.get(step) for step in reward_steps]
-    else:
-        episode_length_values = [None] * len(reward_values)
 
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    figure_title = run_name or os.path.basename(os.path.abspath(log_dir))
+    figure_title = run_name or os.path.basename(normalized_log_dirs[0])
     figure, axis = plt.subplots(1, 1, figsize=(8, 5), constrained_layout=True)
 
     axis.plot(reward_steps, reward_values, color="#1f77b4", linewidth=2)
+    if len(normalized_log_dirs) > 1:
+        lower = [value - stderr for value, stderr in zip(reward_values, reward_stderr_values)]
+        upper = [value + stderr for value, stderr in zip(reward_values, reward_stderr_values)]
+        axis.fill_between(reward_steps, lower, upper, color="#1f77b4", alpha=0.2)
     axis.set_title(f"{figure_title}\n{reward_tag} vs Training Step")
     axis.set_xlabel("Training Step")
     axis.set_ylabel(reward_tag)
@@ -228,31 +294,67 @@ def export_learning_curve_artifacts(
                 "logged_index",
                 "training_step",
                 "reward",
+                "reward_stderr",
+                "reward_count",
                 "success_metric",
+                "success_metric_stderr",
+                "success_metric_count",
                 "mean_episode_length",
+                "mean_episode_length_stderr",
+                "mean_episode_length_count",
             ],
         )
         writer.writeheader()
-        for idx, step, reward, success_value, episode_length_value in zip(
-            logged_indices, reward_steps, reward_values, success_values, episode_length_values
+        for (
+            idx,
+            step,
+            reward,
+            reward_stderr,
+            reward_count,
+            success_value,
+            success_stderr,
+            success_count,
+            episode_length_value,
+            episode_length_stderr,
+            episode_length_count,
+        ) in zip(
+            logged_indices,
+            reward_steps,
+            reward_values,
+            reward_stderr_values,
+            reward_count_values,
+            success_values,
+            success_stderr_values,
+            success_count_values,
+            episode_length_values,
+            episode_length_stderr_values,
+            episode_length_count_values,
         ):
             writer.writerow(
                 {
                     "logged_index": idx,
                     "training_step": step,
                     "reward": reward,
+                    "reward_stderr": reward_stderr,
+                    "reward_count": reward_count,
                     "success_metric": success_value if success_value is not None else "",
+                    "success_metric_stderr": success_stderr if success_stderr is not None else "",
+                    "success_metric_count": success_count,
                     "mean_episode_length": episode_length_value if episode_length_value is not None else "",
+                    "mean_episode_length_stderr": episode_length_stderr if episode_length_stderr is not None else "",
+                    "mean_episode_length_count": episode_length_count,
                 }
             )
 
     metadata = {
-        "source_log_dir": os.path.abspath(log_dir),
+        "source_log_dir": normalized_log_dirs[0],
+        "source_log_dirs": normalized_log_dirs,
         "metric_mode": metric_mode,
         "series_tag": reward_tag,
         "reward_tag": reward_tag,
         "success_metric_tag": success_tag,
         "mean_episode_length_tag": episode_length_tag,
+        "num_runs": len(normalized_log_dirs),
         "num_points": len(reward_values),
         "max_reward": max(reward_values) if reward_values else None,
         "final_reward": reward_values[-1] if reward_values else None,
@@ -268,7 +370,7 @@ def export_learning_curve_artifacts(
 
 
 def export_learning_curve_comparison(
-    run_entries: list[dict[str, str]],
+    run_entries: list[dict[str, Any]],
     output_dir: str,
     title: str = "Learning Curve Comparison",
     metrics: str | list[str] | tuple[str, ...] | None = None,
@@ -283,7 +385,7 @@ def export_learning_curve_comparison(
     import matplotlib.pyplot as plt
 
     if metrics is None:
-        requested_metrics = ["default", "oracle"]
+        requested_metrics = ["eureka", "oracle", "success"]
     elif isinstance(metrics, str):
         requested_metrics = [metrics]
     else:
@@ -294,6 +396,7 @@ def export_learning_curve_comparison(
         "default": "Default Reward",
         "eureka": "Eureka Reward",
         "oracle": "Oracle Reward",
+        "success": "Success Metric",
     }
 
     os.makedirs(output_dir, exist_ok=True)
@@ -309,33 +412,76 @@ def export_learning_curve_comparison(
 
         for entry in run_entries:
             label = entry["label"]
-            log_dir = entry["log_dir"]
-            series_by_tag = load_tensorboard_scalar_series(log_dir)
-            reward_tag = select_plot_series_tag(series_by_tag, metric=metric_mode)
+            log_dir_input = entry["log_dir"]
+            if isinstance(log_dir_input, (list, tuple)):
+                normalized_log_dirs = [os.path.abspath(str(path)) for path in log_dir_input]
+            else:
+                normalized_log_dirs = [os.path.abspath(str(log_dir_input))]
+
+            series_by_run = [load_tensorboard_scalar_series(path) for path in normalized_log_dirs]
+            reward_tag = None
+            for series_by_tag in series_by_run:
+                reward_tag = select_plot_series_tag(series_by_tag, metric=metric_mode)
+                if reward_tag is not None:
+                    break
             if reward_tag is None:
                 continue
 
-            reward_series = series_by_tag[reward_tag]
-            reward_steps = reward_series["steps"]
-            reward_values = reward_series["values"]
+            reward_values_by_step: dict[float, list[float]] = {}
+            for series_by_tag in series_by_run:
+                current_reward_tag = select_plot_series_tag(series_by_tag, metric=metric_mode)
+                if current_reward_tag is None or current_reward_tag not in series_by_tag:
+                    continue
+                reward_series = series_by_tag[current_reward_tag]
+                for step, value in zip(reward_series["steps"], reward_series["values"]):
+                    reward_values_by_step.setdefault(float(step), []).append(float(value))
+
+            if not reward_values_by_step:
+                continue
+
+            reward_steps = sorted(reward_values_by_step)
+            reward_values: list[float] = []
+            reward_stderr_values: list[float] = []
+            reward_count_values: list[int] = []
+            for step in reward_steps:
+                reward_mean, reward_stderr = _mean_and_stderr(reward_values_by_step[step])
+                reward_values.append(reward_mean if reward_mean is not None else 0.0)
+                reward_stderr_values.append(reward_stderr if reward_stderr is not None else 0.0)
+                reward_count_values.append(len(reward_values_by_step[step]))
+
             logged_indices = list(range(len(reward_values)))
             if plotted_metric == 0:
                 y_axis_label = reward_tag
 
             axis.plot(reward_steps, reward_values, linewidth=2, label=label)
+            if len(normalized_log_dirs) > 1:
+                lower = [value - stderr for value, stderr in zip(reward_values, reward_stderr_values)]
+                upper = [value + stderr for value, stderr in zip(reward_values, reward_stderr_values)]
+                axis.fill_between(reward_steps, lower, upper, alpha=0.18)
             plotted_metric += 1
             plotted_any = True
 
-            for idx, step, reward in zip(logged_indices, reward_steps, reward_values):
+            source_log_dir = normalized_log_dirs[0]
+            source_log_dirs = json.dumps(normalized_log_dirs)
+            for idx, step, reward, reward_stderr, reward_count in zip(
+                logged_indices, reward_steps, reward_values, reward_stderr_values, reward_count_values
+            ):
                 comparison_rows.append(
                     {
                         "metric_mode": metric_mode,
                         "label": label,
-                        "log_dir": os.path.abspath(log_dir),
+                        "log_dir": source_log_dir,
+                        "source_log_dirs": source_log_dirs,
                         "logged_index": idx,
                         "training_step": step,
                         "reward": reward,
+                        "reward_stderr": reward_stderr,
+                        "reward_count": reward_count,
+                        "series_value": reward,
+                        "series_stderr": reward_stderr,
+                        "series_count": reward_count,
                         "reward_tag": reward_tag,
+                        "series_tag": reward_tag,
                     }
                 )
 
@@ -362,7 +508,22 @@ def export_learning_curve_comparison(
     with open(csv_path, "w", newline="") as csv_file:
         writer = csv.DictWriter(
             csv_file,
-            fieldnames=["metric_mode", "label", "log_dir", "logged_index", "training_step", "reward", "reward_tag"],
+            fieldnames=[
+                "metric_mode",
+                "label",
+                "log_dir",
+                "source_log_dirs",
+                "logged_index",
+                "training_step",
+                "reward",
+                "reward_stderr",
+                "reward_count",
+                "series_value",
+                "series_stderr",
+                "series_count",
+                "reward_tag",
+                "series_tag",
+            ],
         )
         writer.writeheader()
         writer.writerows(comparison_rows)

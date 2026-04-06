@@ -19,7 +19,7 @@ import imageio.v2 as imageio
 import numpy as np
 from PIL import Image, ImageDraw
 
-from isaaclab_eureka.utils import get_freest_gpu
+from isaaclab_eureka.utils import resolve_sim_device
 
 # import gymnasium as gym
 # import isaaclab_tasks  # noqa: F401
@@ -93,10 +93,7 @@ class RecordManagerQuad:
 
         from isaaclab.app import AppLauncher
 
-        device = self.device
-        if device == "cuda":
-            device_id = get_freest_gpu()
-            device = f"cuda:{device_id}"
+        device = resolve_sim_device(self.device)
 
         app_launcher = AppLauncher(headless=self.headless, device=device)
         simulation_app = app_launcher.app

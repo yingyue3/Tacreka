@@ -9,6 +9,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 
 def _load_learning_curve_utils():
@@ -27,18 +28,40 @@ def _load_learning_curve_utils():
     return learning_curve_utils
 
 
-def _resolve_run(input_path: str) -> tuple[str, str, str]:
+def _normalize_log_dirs(value: Any, context: str) -> str | list[str]:
+    if isinstance(value, str):
+        return os.path.abspath(value)
+    if isinstance(value, (list, tuple)):
+        normalized_paths = [os.path.abspath(str(path)) for path in value if path]
+        if normalized_paths:
+            return normalized_paths
+    raise ValueError(f"Could not resolve log directory information from {context}")
+
+
+def _resolve_run(input_path: str) -> tuple[str | list[str], str, str]:
     path = os.path.abspath(input_path)
     best_run_json = os.path.join(path, "best_run.json")
     if os.path.isfile(best_run_json):
         with open(best_run_json, "r") as metadata_file:
             metadata = json.load(metadata_file)
-        training_log_dir = metadata.get("training_log_dir")
+        training_log_dir = metadata.get("training_log_dirs") or metadata.get("training_log_dir")
+        if not training_log_dir:
+            best_learning_curve = metadata.get("best_learning_curve") or {}
+            training_log_dir = best_learning_curve.get("source_log_dirs") or best_learning_curve.get("source_log_dir")
         training_run_dir = metadata.get("training_run_dir") or metadata.get("training_log_dir")
         if not training_log_dir or not training_run_dir:
             raise ValueError(f"Missing training_log_dir or training_run_dir in {best_run_json}")
         default_output_dir = os.path.join(path, "best_run_learning_curves")
-        return os.path.abspath(training_log_dir), os.path.abspath(default_output_dir), "best_run"
+        return _normalize_log_dirs(training_log_dir, best_run_json), os.path.abspath(default_output_dir), "best_run"
+
+    learning_curve_metadata = os.path.join(path, "learning_curve_metadata.json")
+    if os.path.isfile(learning_curve_metadata):
+        with open(learning_curve_metadata, "r") as metadata_file:
+            metadata = json.load(metadata_file)
+        source_log_dirs = metadata.get("source_log_dirs") or metadata.get("source_log_dir")
+        if not source_log_dirs:
+            raise ValueError(f"Missing source_log_dirs in {learning_curve_metadata}")
+        return _normalize_log_dirs(source_log_dirs, learning_curve_metadata), os.path.join(path, "learning_curves"), os.path.basename(path)
 
     summaries_dir = os.path.join(path, "summaries")
     if os.path.isdir(summaries_dir):
@@ -66,8 +89,8 @@ def main() -> None:
         "--metric",
         type=str,
         default="default",
-        choices=["default", "eureka", "oracle"],
-        help="Metric to plot. Use 'oracle' for Eureka/oracle_total_rewards on the best RL run.",
+        choices=["default", "eureka", "oracle", "success"],
+        help="Metric to plot. Supports Eureka reward, oracle reward, or success metric.",
     )
     args = parser.parse_args()
 

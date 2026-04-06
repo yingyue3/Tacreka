@@ -10,6 +10,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 DEFAULT_BASELINES = ("eureka", "revolve", "revolve_full", "tacreka_sr")
 BASELINE_ALIASES = {
@@ -54,17 +55,51 @@ def _label_for_path(path: str) -> str:
     return resolved_path.name
 
 
-def _resolve_log_dir(input_path: str) -> tuple[str, str]:
+def _slugify_task_name(task_name: str) -> str:
+    normalized_name = task_name.strip()
+    if normalized_name == "Isaac-Cartpole-Direct-v0":
+        return "cartpole"
+    if normalized_name == "Isaac-Quadcopter-Direct-v0":
+        return "quadcopter"
+    return normalized_name.replace(os.sep, "_").replace(" ", "_")
+
+
+def _normalize_log_dirs(value: Any, context: str) -> str | list[str]:
+    if isinstance(value, str):
+        return os.path.abspath(value)
+    if isinstance(value, (list, tuple)):
+        normalized_paths = [os.path.abspath(str(path)) for path in value if path]
+        if normalized_paths:
+            return normalized_paths
+    raise ValueError(f"Could not resolve log directory information from {context}")
+
+
+def _resolve_log_dir(input_path: str) -> tuple[str | list[str], str]:
     path = os.path.abspath(input_path)
     best_run_json = os.path.join(path, "best_run.json")
     if os.path.isfile(best_run_json):
         with open(best_run_json, "r") as metadata_file:
             metadata = json.load(metadata_file)
-        training_log_dir = metadata.get("training_log_dir")
+
+        training_log_dir = metadata.get("training_log_dirs")
         if not training_log_dir:
-            raise ValueError(f"No training_log_dir found in {best_run_json}")
+            training_log_dir = metadata.get("training_log_dir")
+        if not training_log_dir:
+            best_learning_curve = metadata.get("best_learning_curve") or {}
+            training_log_dir = best_learning_curve.get("source_log_dirs") or best_learning_curve.get("source_log_dir")
+        if not training_log_dir:
+            raise ValueError(f"No training_log_dir/source_log_dirs found in {best_run_json}")
         label = _label_for_path(path)
-        return os.path.abspath(training_log_dir), label
+        return _normalize_log_dirs(training_log_dir, best_run_json), label
+
+    learning_curve_metadata = os.path.join(path, "learning_curve_metadata.json")
+    if os.path.isfile(learning_curve_metadata):
+        with open(learning_curve_metadata, "r") as metadata_file:
+            metadata = json.load(metadata_file)
+        source_log_dirs = metadata.get("source_log_dirs") or metadata.get("source_log_dir")
+        if not source_log_dirs:
+            raise ValueError(f"No source_log_dirs found in {learning_curve_metadata}")
+        return _normalize_log_dirs(source_log_dirs, learning_curve_metadata), _label_for_path(path)
 
     summaries_dir = os.path.join(path, "summaries")
     if os.path.isdir(summaries_dir):
@@ -77,8 +112,8 @@ def _discover_baseline_runs(
     logs_root: str,
     baselines: list[str],
     task: str | None = None,
-    latest_per_family: bool = False,
-) -> list[dict[str, str]]:
+    latest_per_family: bool = True,
+) -> list[dict[str, Any]]:
     runs_by_task: dict[str, list[tuple[str, Path]]] = collections.defaultdict(list)
     normalized_baselines = list(dict.fromkeys(_normalize_baseline_name(baseline) for baseline in baselines))
 
@@ -178,21 +213,21 @@ def main() -> None:
     )
     parser.add_argument(
         "--task",
-        type=str,
+        nargs="+",
         default=None,
-        help="Task name to filter discovered baseline runs, for example Isaac-Cartpole-Direct-v0.",
+        help="One or more task names to filter discovered baseline runs, for example Isaac-Cartpole-Direct-v0.",
     )
     parser.add_argument(
-        "--latest_per_family",
+        "--all_runs",
         action="store_true",
-        help="When using automatic discovery, keep only the latest timestamped run per baseline family.",
+        help="When using automatic discovery, include all runs instead of only the latest timestamped run per baseline family.",
     )
     parser.add_argument(
         "--metric",
         nargs="+",
-        default=["default", "oracle"],
-        choices=["default", "eureka", "oracle"],
-        help="Metric series to compare. Defaults to both the original/default reward and oracle reward.",
+        default=["eureka", "oracle", "success"],
+        choices=["default", "eureka", "oracle", "success"],
+        help="Metric series to compare. Defaults to Eureka reward, oracle reward, and success metric.",
     )
     args = parser.parse_args()
 
@@ -207,31 +242,62 @@ def main() -> None:
         output_dir = args.output_dir
     output_dir = os.path.abspath(output_dir)
 
+    task_filters = args.task or [None]
+
     if args.inputs:
-        run_entries: list[dict[str, str]] = []
+        run_entries: list[dict[str, Any]] = []
         for item in args.inputs:
             log_dir, label = _resolve_log_dir(item)
             run_entries.append({"log_dir": log_dir, "label": label})
-    else:
+        result = learning_curve_utils.export_learning_curve_comparison(
+            run_entries=run_entries,
+            output_dir=output_dir,
+            title=args.title,
+            metrics=args.metric,
+        )
+        if result is None:
+            raise RuntimeError(f"No scalar series matching metrics {args.metric} were found in the provided inputs.")
+
+        print(f"[INFO] Compared {len(run_entries)} run(s)")
+        print(f"[INFO] Saved comparison plot: {result['plot_path']}")
+        print(f"[INFO] Saved comparison CSV: {result['csv_path']}")
+        return
+
+    multiple_tasks = len(task_filters) > 1 or task_filters[0] is None
+    for task_name in task_filters:
         run_entries = _discover_baseline_runs(
             logs_root=args.logs_root,
             baselines=args.baselines,
-            task=args.task,
-            latest_per_family=args.latest_per_family,
+            task=task_name,
+            latest_per_family=not args.all_runs,
         )
 
-    result = learning_curve_utils.export_learning_curve_comparison(
-        run_entries=run_entries,
-        output_dir=output_dir,
-        title=args.title,
-        metrics=args.metric,
-    )
-    if result is None:
-        raise RuntimeError(f"No scalar series matching metrics {args.metric} were found in the provided inputs.")
+        if task_name is None:
+            task_output_dir = output_dir
+            task_title = args.title
+        elif multiple_tasks:
+            task_output_dir = os.path.join(output_dir, _slugify_task_name(task_name))
+            task_title = f"{args.title} - {task_name}"
+        else:
+            task_output_dir = output_dir
+            task_title = f"{args.title} - {task_name}"
 
-    print(f"[INFO] Compared {len(run_entries)} run(s)")
-    print(f"[INFO] Saved comparison plot: {result['plot_path']}")
-    print(f"[INFO] Saved comparison CSV: {result['csv_path']}")
+        result = learning_curve_utils.export_learning_curve_comparison(
+            run_entries=run_entries,
+            output_dir=task_output_dir,
+            title=task_title,
+            metrics=args.metric,
+        )
+        if result is None:
+            raise RuntimeError(
+                f"No scalar series matching metrics {args.metric} were found for task {task_name or 'auto'}."
+            )
+
+        task_label = task_name or "auto"
+        print(f"[INFO] Task: {task_label}")
+        print(f"[INFO] Compared {len(run_entries)} run(s)")
+        print(f"[INFO] Saved comparison plot: {result['plot_path']}")
+        print(f"[INFO] Saved comparison CSV: {result['csv_path']}")
 
 
 if __name__ == "__main__":

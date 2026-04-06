@@ -19,7 +19,7 @@ import imageio.v2 as imageio
 import numpy as np
 from PIL import Image, ImageDraw
 
-from isaaclab_eureka.utils import get_freest_gpu
+from isaaclab_eureka.utils import resolve_sim_device
 
 
 def _extract_policy_obs(obs):
@@ -127,10 +127,7 @@ def main(args_cli):
     """Run a checkpoint policy and create a fallback MP4 recording."""
     from isaaclab.app import AppLauncher
 
-    device = args_cli.device
-    if device == "cuda":
-        device_id = get_freest_gpu()
-        device = f"cuda:{device_id}"
+    device = resolve_sim_device(args_cli.device)
 
     app_launcher = AppLauncher(headless=args_cli.headless, device=device)
     simulation_app = app_launcher.app

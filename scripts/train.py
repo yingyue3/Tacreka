@@ -16,10 +16,11 @@ from isaaclab_eureka.tacreka_sr_auto import Tacreka_SR
 
 def main(args_cli):
     if args_cli.baseline == "tacreka_sr":
-        tacreka = Tacreka_Ranking(
+        tacreka = Tacreka_SR(
             task=args_cli.task,
             rl_library=args_cli.rl_library,
             num_parallel_runs=args_cli.num_parallel_runs,
+            num_reward_seeds=args_cli.num_reward_seeds,
             device=args_cli.device,
             env_seed=args_cli.env_seed,
             max_training_iterations=args_cli.max_training_iterations,
@@ -44,6 +45,7 @@ def main(args_cli):
             task=args_cli.task,
             rl_library=args_cli.rl_library,
             num_pairs=num_pairs,
+            num_reward_seeds=args_cli.num_reward_seeds,
             device=args_cli.device,
             env_seed=args_cli.env_seed,
             max_training_iterations=args_cli.max_training_iterations,
@@ -63,6 +65,7 @@ def main(args_cli):
             device=args_cli.device,
             env_seed=args_cli.env_seed,
             max_training_iterations=args_cli.max_training_iterations,
+            num_reward_seeds=args_cli.num_reward_seeds,
             temperature=args_cli.temperature,
             gpt_model=args_cli.gpt_model,
             num_generations=args_cli.max_eureka_iterations,
@@ -85,6 +88,7 @@ def main(args_cli):
             task=args_cli.task,
             rl_library=args_cli.rl_library,
             num_parallel_runs=args_cli.num_parallel_runs,
+            num_reward_seeds=args_cli.num_reward_seeds,
             device=args_cli.device,
             env_seed=args_cli.env_seed,
             max_training_iterations=args_cli.max_training_iterations,
@@ -107,6 +111,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--device", type=str, default="cuda", help="The device to run training on.")
     parser.add_argument("--env_seed", type=int, default=42, help="The random seed to use for the environment.")
+    parser.add_argument(
+        "--num_reward_seeds",
+        type=int,
+        default=5,
+        help="Number of independent RL seeds to train per reward candidate for aggregate evaluation.",
+    )
     parser.add_argument("--max_eureka_iterations", type=int, default=10, help="The number of Eureka iterations to run.")
     parser.add_argument(
         "--max_training_iterations",

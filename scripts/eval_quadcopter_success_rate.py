@@ -13,7 +13,7 @@ import argparse
 import types
 
 from isaaclab_eureka.config import TASKS_CFG
-from isaaclab_eureka.utils import get_freest_gpu
+from isaaclab_eureka.utils import resolve_sim_device
 
 
 # Eval-only reset template: records success_metric at episode end without needing
@@ -76,8 +76,7 @@ def eval_success_rate(
     """
     from isaaclab.app import AppLauncher
 
-    if device == "cuda":
-        device = f"cuda:{get_freest_gpu()}"
+    device = resolve_sim_device(device)
 
     app_launcher = AppLauncher(headless=headless, device=device)
     simulation_app = app_launcher.app

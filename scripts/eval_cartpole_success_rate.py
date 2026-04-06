@@ -28,7 +28,7 @@ the time `step()` returns.
 import argparse
 
 from isaaclab_eureka.config import TASKS_CFG
-from isaaclab_eureka.utils import get_freest_gpu
+from isaaclab_eureka.utils import resolve_sim_device
 
 
 TASK_NAME = "Isaac-Cartpole-Direct-v0"
@@ -89,8 +89,7 @@ def eval_success_rate(
     """
     from isaaclab.app import AppLauncher
 
-    if device == "cuda":
-        device = f"cuda:{get_freest_gpu()}"
+    device = resolve_sim_device(device)
 
     app_launcher = AppLauncher(headless=headless, device=device)
     simulation_app = app_launcher.app

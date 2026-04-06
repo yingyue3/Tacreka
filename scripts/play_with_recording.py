@@ -8,7 +8,7 @@ import argparse
 import math
 import os
 
-from isaaclab_eureka.utils import get_freest_gpu
+from isaaclab_eureka.utils import resolve_sim_device
 
 
 def main(args_cli):
@@ -21,9 +21,7 @@ def main(args_cli):
     checkpoint = args_cli.checkpoint
 
     # parse device
-    if device == "cuda":
-        device_id = get_freest_gpu()
-        device = f"cuda:{device_id}"
+    device = resolve_sim_device(device)
 
     # launch app with cameras enabled for recording
     app_launcher = AppLauncher(headless=args_cli.headless, device=device, enable_cameras=True)

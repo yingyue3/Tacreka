@@ -35,7 +35,7 @@ from isaaclab_eureka.config import (
     TASK_SUCCESS_PRE_FEEDBACK_PROMPT
 )
 from isaaclab_eureka.managers import EurekaTaskManager, LLMManagerTac, RecordManagerQuad
-from isaaclab_eureka.utils import load_tensorboard_logs
+from isaaclab_eureka.utils import summarize_tensorboard_candidate
 
 
 class Tacreka_SR:
@@ -52,6 +52,7 @@ class Tacreka_SR:
         temperature: float = 1.0,
         gpt_model: str = "gpt-4",
         num_parallel_runs: int = 2,
+        num_reward_seeds: int = 5,
         use_wandb: bool = True,
         wandb_project: str = "isaaclab-eureka",
         wandb_entity: str = None,
@@ -91,6 +92,7 @@ class Tacreka_SR:
 
         self._task_description = task_description
         self._feedback_subsampling = feedback_subsampling
+        self._num_reward_seeds = num_reward_seeds
         # num processes is the number of parallel runs for the LLM (reward components number)
         self._num_processes = num_parallel_runs
         # num parallel runs is the number of parallel runs for the task (reward functions number)
@@ -121,6 +123,7 @@ class Tacreka_SR:
             success_metric_string=success_metric_string,
             log_namespace="tacreka_sr",
             rl_log_root_dir=self._rl_runs_dir,
+            num_seeds_per_reward=num_reward_seeds,
         )
 
         print("[INFO]: Setting up the Record Manager...")
@@ -276,8 +279,22 @@ class Tacreka_SR:
                     # Compute the performance metrics
                     print("Successfully generated reward function, generating task feedback")
                     print(f"result['log_dir']: {result['log_dir']}")
-                    eureka_task_feedback, success_metric_max, rewards_correlation = self._get_eureka_task_feedback(
-                        result["log_dir"], self._feedback_subsampling
+                    evaluation_summary = self._get_eureka_task_feedback(
+                        result.get("seed_log_dirs") or result["log_dir"], self._feedback_subsampling
+                    )
+                    eureka_task_feedback = evaluation_summary["feedback"]
+                    success_metric_mean = evaluation_summary["success_metric_mean"]
+                    rewards_correlation_mean = evaluation_summary["rewards_correlation_mean"]
+                    best_seed_index = evaluation_summary["best_seed_index"]
+                    representative_seed_index = evaluation_summary["representative_seed_index"]
+                    seed_results = result.get("seed_results", [])
+                    seed_run_dirs = result.get("seed_run_dirs", [])
+                    seed_checkpoint_files = result.get("seed_checkpoint_files", [])
+                    selected_seed_result = seed_results[best_seed_index] if best_seed_index < len(seed_results) else {}
+                    representative_seed_result = (
+                        seed_results[representative_seed_index]
+                        if representative_seed_index < len(seed_results)
+                        else {}
                     )
 
                     # Generate the user feedback prompt
@@ -291,19 +308,36 @@ class Tacreka_SR:
 
                     # Store the results
                     results[idx]["eureka_task_feedback"] = eureka_task_feedback
-                    results[idx]["success_metric_max"] = success_metric_max
-                    results[idx]["rewards_correlation"] = rewards_correlation
+                    results[idx]["success_metric_mean"] = success_metric_mean
+                    results[idx]["success_metric_max"] = success_metric_mean
+                    results[idx]["success_metric_stderr"] = evaluation_summary["success_metric_stderr"]
+                    results[idx]["rewards_correlation"] = rewards_correlation_mean
+                    results[idx]["rewards_correlation_stderr"] = evaluation_summary["rewards_correlation_stderr"]
+                    results[idx]["seed_summaries"] = evaluation_summary["seed_summaries"]
+                    results[idx]["selected_seed"] = selected_seed_result.get("seed", best_seed_index)
+                    results[idx]["representative_seed"] = representative_seed_result.get(
+                        "seed", representative_seed_index
+                    )
+                    results[idx]["selected_seed_log_dir"] = selected_seed_result.get("log_dir")
+                    results[idx]["selected_seed_run_dir"] = selected_seed_result.get(
+                        "run_dir",
+                        seed_run_dirs[best_seed_index] if best_seed_index < len(seed_run_dirs) else None,
+                    )
+                    results[idx]["selected_seed_checkpoint_file"] = selected_seed_result.get(
+                        "checkpoint_file",
+                        seed_checkpoint_files[best_seed_index] if best_seed_index < len(seed_checkpoint_files) else None,
+                    )
                     feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
                     # print(f"feature_idx: {feature_idx}")
                     results[idx]["reward_components"] = feature_gen_outputs["raw_outputs"][feature_idx]
                     # Check the best performing metric, determined by the minimum distance from the win target
-                    if success_metric_max is not None and (
+                    if success_metric_mean is not None and (
                         iter_best_success_metric is None
-                        or np.abs(success_metric_max - self._success_metric_to_win)
+                        or np.abs(success_metric_mean - self._success_metric_to_win)
                         < np.abs(iter_best_success_metric - self._success_metric_to_win)
                     ):
                         # Store the best run for this iteration
-                        iter_best_success_metric = success_metric_max
+                        iter_best_success_metric = success_metric_mean
                         best_run_idx = idx
 
                         # Store the best metric across all iterations
@@ -312,16 +346,28 @@ class Tacreka_SR:
                             < np.abs(best_run_results["success_metric"] - self._success_metric_to_win)
                         ):
                             best_run_results["success_metric"] = iter_best_success_metric
+                            best_run_results["success_metric_stderr"] = evaluation_summary["success_metric_stderr"]
                             best_run_results["gpt_reward_method"] = gpt_reward_method_strings[idx]["reward_strings"]
                             best_run_results["feature_idx"] = gpt_reward_method_strings[idx]["feature_idx"]
                             best_run_results["task_feedback"] = eureka_task_feedback
-                            best_run_results["rewards_correlation"] = rewards_correlation
-                            best_run_results["training_log_dir"] = result.get("log_dir")
-                            best_run_results["training_run_dir"] = result.get("run_dir", result.get("log_dir"))
-                            best_run_results["checkpoint_file"] = result.get("checkpoint_file") or resolve_checkpoint_path(
-                                result.get("run_dir", result.get("log_dir"))
+                            best_run_results["rewards_correlation"] = rewards_correlation_mean
+                            best_run_results["rewards_correlation_stderr"] = evaluation_summary[
+                                "rewards_correlation_stderr"
+                            ]
+                            best_run_results["training_log_dir"] = result.get("seed_log_dirs") or result.get("log_dir")
+                            best_run_results["training_log_dirs"] = result.get("seed_log_dirs") or [result.get("log_dir")]
+                            best_run_results["training_run_dir"] = (
+                                results[idx]["selected_seed_run_dir"]
+                                or result.get("run_dir", result.get("log_dir"))
+                            )
+                            best_run_results["checkpoint_file"] = (
+                                results[idx]["selected_seed_checkpoint_file"]
+                                or resolve_checkpoint_path(results[idx]["selected_seed_run_dir"])
                             )
                             best_run_results["learning_curve"] = result.get("learning_curve")
+                            best_run_results["seed_summaries"] = evaluation_summary["seed_summaries"]
+                            best_run_results["selected_seed"] = results[idx]["selected_seed"]
+                            best_run_results["representative_seed"] = results[idx]["representative_seed"]
                             print("logging best metric to wandb")
                             # Log best metric to wandb
                             if self._use_wandb and self._wandb:
@@ -330,12 +376,12 @@ class Tacreka_SR:
                                     "best/iteration": iter,
                                     "best/run_idx": idx,
                                 }, step=iter)
-                    if self._human_feedback and success_metric_max is not None:
+                    if self._human_feedback and success_metric_mean is not None:
                         if best_run_success_metric is None:
                             print("No best reward components found, setting current run as best")
                             best_reward_components = idx
-                            best_run_reward_correlation = rewards_correlation
-                            best_run_success_metric = success_metric_max
+                            best_run_reward_correlation = rewards_correlation_mean
+                            best_run_success_metric = success_metric_mean
                             best_run_task_feedback = eureka_task_feedback
                             best_run_feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
                             best_run_feature_components = feature_gen_outputs["raw_outputs"][best_run_feature_idx]
@@ -347,8 +393,8 @@ class Tacreka_SR:
                             print("1. Press 1 if the run 1 is preferred")
                             print("2. Press 2 if the run 2 is preferred")
                             print("+"*10 + " Run 1 " + "+"*10)
-                            print(f"reward correlation: {rewards_correlation}")
-                            print(f"success metric: {success_metric_max}")
+                            print(f"reward correlation: {rewards_correlation_mean}")
+                            print(f"success metric: {success_metric_mean}")
                             print(f"task feedback: {eureka_task_feedback}")
                             feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
                             print("++++++ feature components ++++++") 
@@ -363,8 +409,8 @@ class Tacreka_SR:
                             feedback = input("Enter your feedback: ")
                             if feedback == "1":
                                 best_reward_components = idx
-                                best_run_reward_correlation = rewards_correlation
-                                best_run_success_metric = success_metric_max
+                                best_run_reward_correlation = rewards_correlation_mean
+                                best_run_success_metric = success_metric_mean
                                 best_run_task_feedback = eureka_task_feedback
                                 best_run_feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
                                 best_run_feature_components = feature_gen_outputs["raw_outputs"][best_run_feature_idx]
@@ -401,74 +447,12 @@ class Tacreka_SR:
         # Close the task manager
         self._task_manager.close()
 
-    def _get_eureka_task_feedback(self, log_dir: str, feedback_subsampling: int) -> tuple[str, float, float]:
-        """Get the feedback for the Eureka task.
-
-        Args:
-            log_dir: The directory where the tensorboard logs are stored.
-            feedback_subsampling: The subsampling of the metrics' trajectories.
-        Returns:
-            A tuple containing the feedback string, the maximum of the success metric, and the correlation between the oracle and GPT rewards.
-        """
-        # We import here because doing this before launching Kit causes GCC_12.0 errors
-        import numpy as np
-
-        data = load_tensorboard_logs(log_dir)
-
-        # Compute correlation between the oracle and GPT rewards
-        eureka_rewards_data = next((data[key] for key in data if key.endswith("Eureka/eureka_total_rewards")), None)
-        oracle_rewards_data = next((data[key] for key in data if key.endswith("Eureka/oracle_total_rewards")), None)
-        
-        # Handle case where rewards data is missing
-        if eureka_rewards_data is None or oracle_rewards_data is None:
-            print(f"[WARNING] Missing reward data in TensorBoard logs. Available keys: {list(data.keys())}")
-            print(f"[WARNING] Eureka rewards found: {eureka_rewards_data is not None}, Oracle rewards found: {oracle_rewards_data is not None}")
-            # Return default correlation of 0.0 if data is missing
-            rewards_correlation = 0.0
-        else:
-            eureka_rewards = np.array(eureka_rewards_data)
-            oracle_rewards = np.array(oracle_rewards_data)
-            
-            # Check if arrays have valid shape
-            if eureka_rewards.ndim == 0 or oracle_rewards.ndim == 0:
-                print(f"[WARNING] Reward arrays have invalid shape. Eureka: {eureka_rewards.shape}, Oracle: {oracle_rewards.shape}")
-                rewards_correlation = 0.0
-            elif len(eureka_rewards) == 0 or len(oracle_rewards) == 0:
-                print(f"[WARNING] Reward arrays are empty. Eureka: {len(eureka_rewards)}, Oracle: {len(oracle_rewards)}")
-                rewards_correlation = 0.0
-            else:
-                # Sometimes, the tensorboard logging is not complete, we take the minimum length between the two buffers
-                min_length = min(len(eureka_rewards), len(oracle_rewards))
-                rewards_correlation = np.corrcoef(eureka_rewards[:min_length], oracle_rewards[:min_length])[0, 1]
-
-        success_metric_max = None
-        # Make a summary of each plot in the tensorboard logs
-        total_feed_back_string = ""
-        for metric_name, metric_data in data.items():
-            if "Eureka/" in metric_name:
-                # Remove the first two data points as they are usually outliers
-                metric_data = metric_data[2:]
-                metric_name = metric_name.split("Eureka/", 1)[-1]
-                metric_min = min(metric_data)
-                metric_max = max(metric_data)
-                metric_mean = sum(metric_data) / len(metric_data)
-                # Best metric is the one closest to the target
-                metric_best = metric_data[np.abs(np.array(metric_data) - self._success_metric_to_win).argmin()]
-                if metric_name == "success_metric":
-                    metric_name = "task_score"
-                    success_metric_max = metric_best
-                data_string = [f"{data:.2f}" for data in metric_data[::feedback_subsampling]]
-                feedback_string = (
-                    f"{metric_name}: {data_string}, Min: {metric_min:.2f}, Max: {metric_max:.2f}, Mean:"
-                    f" {metric_mean:.2f} \n"
-                )
-                if "Eureka/success_metric" in data and metric_name == "Eureka/oracle_total_rewards":
-                    # If success metric is available, we do not provide the oracle feedback
-                    feedback_string = ""
-                total_feed_back_string += feedback_string
-
-        total_feed_back_string += f"\nThe desired task_score to win is: {self._success_metric_to_win:.2f}\n"
-        return total_feed_back_string, success_metric_max, rewards_correlation
+    def _get_eureka_task_feedback(self, log_dir: str | list[str], feedback_subsampling: int) -> dict:
+        return summarize_tensorboard_candidate(
+            log_dirs=log_dir,
+            feedback_subsampling=feedback_subsampling,
+            success_metric_target=self._success_metric_to_win,
+        )
 
     def _log_iteration_results(self, iter: int, results: list):
         """Log the results of the iteration."""
@@ -492,14 +476,17 @@ class Tacreka_SR:
                     f.write(f"Training successful with the following metrics:\n{result['eureka_task_feedback']}\n")
                     f.write(f"Reward correlation with oracle rewards:\n{result['rewards_correlation']}\n")
                     # Log success_metric, using 0.0 if it's None (e.g., if metric wasn't found in logs)
-                    success_metric_value = result.get("success_metric_max")
+                    success_metric_value = result.get("success_metric_mean")
                     if success_metric_value is None:
                         success_metric_value = 0.0
                     self._tensorboard_writer.add_scalar(f"Run_{idx}/success_metric", success_metric_value, iter)
+                    success_metric_stderr = result.get("success_metric_stderr") or 0.0
+                    self._tensorboard_writer.add_scalar(f"Run_{idx}/success_metric_stderr", success_metric_stderr, iter)
                     # Log to wandb
                     if self._use_wandb and self._wandb:
                         self._wandb.log({
                             f"Run_{idx}/success_metric": success_metric_value,
+                            f"Run_{idx}/success_metric_stderr": success_metric_stderr,
                             f"Run_{idx}/rewards_correlation": result.get("rewards_correlation", 0.0),
                         }, step=iter)
                 else:
@@ -527,10 +514,13 @@ class Tacreka_SR:
         output = ""
         if best_run_results["success_metric"] is not None:
             output += f"- Success metric: {best_run_results['success_metric']}\n"
+            output += f"- Success metric stderr: {best_run_results.get('success_metric_stderr', 0.0)}\n"
             output += f"- GPT reward method: {best_run_results['gpt_reward_method']}\n"
             output += f"- Best training log dir: {best_run_results.get('training_log_dir', 'unknown')}\n"
             output += f"- Best training run dir: {best_run_results.get('training_run_dir', 'unknown')}\n"
             output += f"- Best checkpoint: {best_run_results.get('checkpoint_file', 'unknown')}\n"
+            output += f"- Selected seed: {best_run_results.get('selected_seed', 'unknown')}\n"
+            output += f"- Representative seed: {best_run_results.get('representative_seed', 'unknown')}\n"
             learning_curve_path = best_run_results.get("best_learning_curve", {}).get("plot_path", "unknown")
             output += f"- Best learning curve plot: {learning_curve_path}\n"
             output += f"- Task metrics:\n{best_run_results['task_feedback']}\n"
