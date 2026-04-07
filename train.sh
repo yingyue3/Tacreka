@@ -4,6 +4,8 @@
 #SBATCH --mem=20G
 #SBATCH --cpus-per-task=1
 #SBATCH --gpus=h100:1
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=somjitnath@gmail.com
 
 set -euo pipefail
 

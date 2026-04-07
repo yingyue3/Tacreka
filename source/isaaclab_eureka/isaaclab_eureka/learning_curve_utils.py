@@ -7,6 +7,7 @@ import glob
 import json
 import math
 import os
+import re
 from typing import Any
 
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
@@ -22,6 +23,14 @@ METRIC_MODE_ALIASES = {
     "success": "success",
     "success_metric": "success",
 }
+
+TASK_SUCCESS_TARGETS = {
+    "Isaac-Cartpole-Direct-v0": 1.0,
+    "Isaac-Quadcopter-Direct-v0": 0.0,
+}
+
+ITERATION_HEADER_RE = re.compile(r"#+\s*Iteration:\s*(\d+)")
+RUN_HEADER_RE = re.compile(r"\*+\s*Run:\s*(\d+)")
 
 
 def load_tensorboard_scalar_series(path: str) -> dict[str, dict[str, list[float]]]:
@@ -47,7 +56,10 @@ def load_tensorboard_scalar_series(path: str) -> dict[str, dict[str, list[float]
             tensor_value = tensor_util.make_ndarray(event.tensor_proto)
             if getattr(tensor_value, "size", 0) != 1:
                 continue
-            values.append(float(tensor_value.reshape(-1)[0]))
+            try:
+                values.append(float(tensor_value.reshape(-1)[0]))
+            except (TypeError, ValueError):
+                continue
             steps.append(float(event.step))
             wall_times.append(float(event.wall_time))
         if values:
@@ -168,6 +180,268 @@ def resolve_checkpoint_path(run_dir: str | None) -> str | None:
     return max(checkpoint_paths, key=_checkpoint_sort_key)
 
 
+def _infer_baseline_run_context(log_dir: str) -> dict[str, str] | None:
+    """Infer logs/<family>/<task>/<timestamp> from a nested RL run directory."""
+    normalized_path = os.path.abspath(log_dir)
+    path_parts = normalized_path.split(os.sep)
+    try:
+        logs_index = path_parts.index("logs")
+    except ValueError:
+        return None
+    if len(path_parts) <= logs_index + 3:
+        return None
+    family = path_parts[logs_index + 1]
+    task = path_parts[logs_index + 2]
+    run_name = path_parts[logs_index + 3]
+    run_root = os.path.join(*path_parts[: logs_index + 4])
+    if normalized_path.startswith(os.sep):
+        run_root = os.sep + run_root
+    return {
+        "family": family,
+        "task": task,
+        "run_name": run_name,
+        "run_root": os.path.abspath(run_root),
+    }
+
+
+def _parse_iteration_statuses(iteration_log_path: str) -> dict[tuple[int, int], bool]:
+    """Parse per-iteration, per-run success/failure flags from a baseline log file."""
+    if not os.path.isfile(iteration_log_path):
+        return {}
+
+    statuses: dict[tuple[int, int], bool] = {}
+    current_iteration: int | None = None
+    current_run: int | None = None
+    with open(iteration_log_path, "r") as log_file:
+        for line in log_file:
+            iteration_match = ITERATION_HEADER_RE.search(line)
+            if iteration_match:
+                current_iteration = int(iteration_match.group(1))
+                continue
+
+            run_match = RUN_HEADER_RE.search(line)
+            if run_match:
+                current_run = int(run_match.group(1))
+                continue
+
+            if current_iteration is None or current_run is None:
+                continue
+
+            if "Training successful" in line:
+                statuses[(current_iteration, current_run)] = True
+            elif "Training failed" in line:
+                statuses[(current_iteration, current_run)] = False
+
+    return statuses
+
+
+def _load_iteration_success_from_tensorboard(
+    run_root: str,
+    iteration_log_name: str,
+    success_metric_target: float,
+) -> dict[str, Any] | None:
+    """Load best-per-iteration success metric for baselines that log root TensorBoard scalars."""
+    statuses = _parse_iteration_statuses(os.path.join(run_root, iteration_log_name))
+    if not statuses:
+        return None
+
+    series_by_tag = load_tensorboard_scalar_series(run_root)
+    run_success_tags: dict[int, dict[str, dict[str, list[float]]]] = {}
+    for tag, series in series_by_tag.items():
+        success_match = re.fullmatch(r"Run_(\d+)/success_metric", tag)
+        if success_match:
+            run_success_tags.setdefault(int(success_match.group(1)), {})["success"] = series
+            continue
+        stderr_match = re.fullmatch(r"Run_(\d+)/success_metric_stderr", tag)
+        if stderr_match:
+            run_success_tags.setdefault(int(stderr_match.group(1)), {})["stderr"] = series
+
+    if not run_success_tags:
+        return None
+
+    max_iteration = max(iteration for iteration, _ in statuses)
+    rows: list[dict[str, Any]] = []
+    for iteration in range(max_iteration + 1):
+        iteration_candidates: list[dict[str, Any]] = []
+        attempted_runs = 0
+        successful_runs = 0
+
+        for (iter_idx, run_idx), was_successful in statuses.items():
+            if iter_idx != iteration:
+                continue
+            attempted_runs += 1
+            if not was_successful:
+                continue
+
+            run_series = run_success_tags.get(run_idx, {})
+            success_series = run_series.get("success")
+            if not success_series:
+                continue
+
+            success_by_step = {
+                int(step): float(value)
+                for step, value in zip(success_series["steps"], success_series["values"])
+            }
+            if iteration not in success_by_step:
+                continue
+
+            successful_runs += 1
+            stderr_value = None
+            stderr_series = run_series.get("stderr")
+            if stderr_series:
+                stderr_by_step = {
+                    int(step): float(value)
+                    for step, value in zip(stderr_series["steps"], stderr_series["values"])
+                }
+                stderr_value = stderr_by_step.get(iteration)
+
+            iteration_candidates.append(
+                {
+                    "run_idx": run_idx,
+                    "success_metric": success_by_step[iteration],
+                    "success_metric_stderr": stderr_value,
+                }
+            )
+
+        selected_candidate = None
+        if iteration_candidates:
+            selected_candidate = min(
+                iteration_candidates,
+                key=lambda item: abs(float(item["success_metric"]) - success_metric_target),
+            )
+
+        rows.append(
+            {
+                "iteration": iteration,
+                "success_metric": selected_candidate["success_metric"] if selected_candidate else None,
+                "success_metric_stderr": selected_candidate["success_metric_stderr"] if selected_candidate else None,
+                "selected_run_idx": selected_candidate["run_idx"] if selected_candidate else None,
+                "attempted_runs": attempted_runs,
+                "successful_runs": successful_runs,
+            }
+        )
+
+    return {"rows": rows, "num_iterations": max_iteration + 1}
+
+
+def _load_iteration_success_from_revolve_full_database(
+    run_root: str,
+    success_metric_target: float,
+) -> dict[str, Any] | None:
+    """Load best-per-generation success metric for REvolve full from database fitness JSON files."""
+    fitness_paths = sorted(glob.glob(os.path.join(run_root, "database", "island_*", "fitness_scores", "*.txt")))
+    if not fitness_paths:
+        return None
+
+    generations: dict[int, list[dict[str, Any]]] = {}
+    max_generation = -1
+    for fitness_path in fitness_paths:
+        filename = os.path.splitext(os.path.basename(fitness_path))[0]
+        try:
+            generation_str, counter_str = filename.split("_", 1)
+            generation = int(generation_str)
+            counter = int(counter_str)
+        except ValueError:
+            continue
+
+        max_generation = max(max_generation, generation)
+        with open(fitness_path, "r") as fitness_file:
+            try:
+                record = json.load(fitness_file)
+            except json.JSONDecodeError:
+                continue
+
+        generations.setdefault(generation, []).append(
+            {
+                "counter": counter,
+                "success": bool(record.get("success")),
+                "success_metric": record.get("success_metric"),
+                "success_metric_stderr": record.get("success_metric_stderr"),
+            }
+        )
+
+    if max_generation < 0:
+        return None
+
+    rows: list[dict[str, Any]] = []
+    for generation in range(max_generation + 1):
+        generation_candidates = generations.get(generation, [])
+        successful_candidates = [
+            candidate
+            for candidate in generation_candidates
+            if candidate.get("success") and candidate.get("success_metric") is not None
+        ]
+
+        selected_candidate = None
+        if successful_candidates:
+            selected_candidate = min(
+                successful_candidates,
+                key=lambda item: abs(float(item["success_metric"]) - success_metric_target),
+            )
+
+        rows.append(
+            {
+                "iteration": generation,
+                "success_metric": selected_candidate["success_metric"] if selected_candidate else None,
+                "success_metric_stderr": selected_candidate["success_metric_stderr"] if selected_candidate else None,
+                "selected_run_idx": selected_candidate["counter"] if selected_candidate else None,
+                "attempted_runs": len(generation_candidates),
+                "successful_runs": len(successful_candidates),
+            }
+        )
+
+    return {"rows": rows, "num_iterations": max_generation + 1}
+
+
+def load_outer_iteration_success_series(log_dirs: list[str] | tuple[str, ...] | str) -> dict[str, Any] | None:
+    """Load best outer-iteration success metric series for a baseline run."""
+    if isinstance(log_dirs, str):
+        normalized_log_dirs = [os.path.abspath(log_dirs)]
+    else:
+        normalized_log_dirs = [os.path.abspath(str(path)) for path in log_dirs if path]
+    if not normalized_log_dirs:
+        return None
+
+    context = _infer_baseline_run_context(normalized_log_dirs[0])
+    if context is None:
+        return None
+
+    success_metric_target = TASK_SUCCESS_TARGETS.get(context["task"])
+    if success_metric_target is None:
+        return None
+
+    family = context["family"]
+    run_root = context["run_root"]
+    if family in {"eureka", "tacreka_sr", "tacreka_preference", "tacreka_ranking"}:
+        result = _load_iteration_success_from_tensorboard(
+            run_root=run_root,
+            iteration_log_name="eureka_iterations.txt",
+            success_metric_target=success_metric_target,
+        )
+    elif family == "revolve":
+        result = _load_iteration_success_from_tensorboard(
+            run_root=run_root,
+            iteration_log_name="revolve_iterations.txt",
+            success_metric_target=success_metric_target,
+        )
+    elif family == "revolve_full":
+        result = _load_iteration_success_from_revolve_full_database(
+            run_root=run_root,
+            success_metric_target=success_metric_target,
+        )
+    else:
+        return None
+
+    if result is None:
+        return None
+
+    result["family"] = family
+    result["task"] = context["task"]
+    result["run_root"] = run_root
+    result["success_metric_target"] = success_metric_target
+    return result
+
+
 def _mean_and_stderr(values: list[float]) -> tuple[float | None, float | None]:
     """Compute the mean and standard error for a sequence of scalars."""
     if not values:
@@ -268,6 +542,7 @@ def export_learning_curve_artifacts(
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import matplotlib.transforms as mtransforms
 
     figure_title = run_name or os.path.basename(normalized_log_dirs[0])
     figure, axis = plt.subplots(1, 1, figsize=(8, 5), constrained_layout=True)
@@ -383,6 +658,7 @@ def export_learning_curve_comparison(
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import matplotlib.transforms as mtransforms
 
     if metrics is None:
         requested_metrics = ["eureka", "oracle", "success"]
@@ -401,6 +677,18 @@ def export_learning_curve_comparison(
 
     os.makedirs(output_dir, exist_ok=True)
     comparison_rows: list[dict[str, Any]] = []
+    iteration_rows: list[dict[str, Any]] = []
+    iteration_summaries: dict[str, dict[str, Any]] = {}
+    for entry in run_entries:
+        log_dir_input = entry["log_dir"]
+        if isinstance(log_dir_input, (list, tuple)):
+            normalized_log_dirs = [os.path.abspath(str(path)) for path in log_dir_input]
+        else:
+            normalized_log_dirs = [os.path.abspath(str(log_dir_input))]
+        iteration_summary = load_outer_iteration_success_series(normalized_log_dirs)
+        if iteration_summary is not None:
+            iteration_summaries[entry["label"]] = iteration_summary
+
     figure, axes = plt.subplots(1, len(metric_modes), figsize=(8 * len(metric_modes), 5), constrained_layout=True)
     if len(metric_modes) == 1:
         axes = [axes]
@@ -453,7 +741,9 @@ def export_learning_curve_comparison(
             if plotted_metric == 0:
                 y_axis_label = reward_tag
 
-            axis.plot(reward_steps, reward_values, linewidth=2, label=label)
+            iteration_count = iteration_summaries.get(label, {}).get("num_iterations")
+            plot_label = f"{label} ({iteration_count} iters)" if iteration_count is not None else label
+            axis.plot(reward_steps, reward_values, linewidth=2, label=plot_label)
             if len(normalized_log_dirs) > 1:
                 lower = [value - stderr for value, stderr in zip(reward_values, reward_stderr_values)]
                 upper = [value + stderr for value, stderr in zip(reward_values, reward_stderr_values)]
@@ -504,6 +794,162 @@ def export_learning_curve_comparison(
     figure.savefig(plot_path, dpi=180)
     plt.close(figure)
 
+    iteration_plot_path = None
+    iteration_csv_path = None
+    if iteration_summaries:
+        iteration_figure, iteration_axis = plt.subplots(1, 1, figsize=(8, 5), constrained_layout=True)
+        plotted_iteration_series = False
+        missing_iteration_annotations = []
+        all_iteration_success_values = []
+        annotation_transform = mtransforms.blended_transform_factory(
+            iteration_axis.transData,
+            iteration_axis.transAxes,
+        )
+
+        for series_index, entry in enumerate(run_entries):
+            label = entry["label"]
+            summary = iteration_summaries.get(label)
+            if summary is None:
+                continue
+
+            rows = summary["rows"]
+            if not rows:
+                continue
+
+            iteration_values = [row["iteration"] for row in rows]
+            success_values = [
+                float(row["success_metric"]) if row["success_metric"] is not None else float("nan")
+                for row in rows
+            ]
+            stderr_values = [
+                float(row["success_metric_stderr"]) if row["success_metric_stderr"] is not None else 0.0
+                for row in rows
+            ]
+            valid_success_values = [value for value in success_values if not math.isnan(value)]
+            iteration_count = summary.get("num_iterations", len(rows))
+            plot_label = f"{label} ({iteration_count} iters)"
+
+            line, = iteration_axis.plot(
+                iteration_values,
+                success_values,
+                linewidth=2,
+                marker="o",
+                markersize=4,
+                label=plot_label,
+            )
+            for row in rows:
+                if row["success_metric"] is None:
+                    missing_iteration_annotations.append(
+                        {
+                            "iteration": row["iteration"],
+                            "label": label,
+                            "color": line.get_color(),
+                            "series_index": series_index,
+                        }
+                    )
+            if valid_success_values:
+                all_iteration_success_values.extend(valid_success_values)
+                lower = [
+                    (value - stderr) if not math.isnan(value) else float("nan")
+                    for value, stderr in zip(success_values, stderr_values)
+                ]
+                upper = [
+                    (value + stderr) if not math.isnan(value) else float("nan")
+                    for value, stderr in zip(success_values, stderr_values)
+                ]
+                iteration_axis.fill_between(iteration_values, lower, upper, color=line.get_color(), alpha=0.18)
+                plotted_iteration_series = True
+
+            source_log_dir = entry["log_dir"][0] if isinstance(entry["log_dir"], (list, tuple)) else entry["log_dir"]
+            for row in rows:
+                iteration_rows.append(
+                    {
+                        "label": label,
+                        "run_root": summary["run_root"],
+                        "task": summary["task"],
+                        "family": summary["family"],
+                        "iteration": row["iteration"],
+                        "success_metric": row["success_metric"],
+                        "success_metric_stderr": row["success_metric_stderr"],
+                        "attempted_runs": row["attempted_runs"],
+                        "successful_runs": row["successful_runs"],
+                        "selected_run_idx": row["selected_run_idx"],
+                        "iteration_count": iteration_count,
+                        "success_metric_target": summary["success_metric_target"],
+                        "source_log_dir": source_log_dir,
+                    }
+                )
+
+        if plotted_iteration_series:
+            target = next(iter(iteration_summaries.values())).get("success_metric_target")
+            if target is not None:
+                iteration_axis.axhline(float(target), color="black", linestyle="--", linewidth=1, alpha=0.5)
+            if target is not None:
+                all_iteration_success_values.append(float(target))
+            if missing_iteration_annotations:
+                iteration_slot_counts = {}
+                for annotation in missing_iteration_annotations:
+                    iteration_value = annotation["iteration"]
+                    slot = iteration_slot_counts.get(iteration_value, 0)
+                    iteration_slot_counts[iteration_value] = slot + 1
+                    marker_y = 0.04 + slot * 0.07
+                    text_y = 0.06 + slot * 0.07
+                    iteration_axis.scatter(
+                        [iteration_value],
+                        [marker_y],
+                        marker="x",
+                        color=annotation["color"],
+                        s=32,
+                        linewidths=1.4,
+                        zorder=6,
+                        transform=annotation_transform,
+                        clip_on=False,
+                    )
+                    iteration_axis.text(
+                        iteration_value,
+                        text_y,
+                        "no data",
+                        color=annotation["color"],
+                        fontsize=8,
+                        ha="center",
+                        va="bottom",
+                        rotation=20,
+                        transform=annotation_transform,
+                        clip_on=False,
+                    )
+            iteration_axis.set_title(f"{title}\nBest Success Metric vs Outer Iteration")
+            iteration_axis.set_xlabel("Outer Iteration")
+            iteration_axis.set_ylabel("Success Metric")
+            iteration_axis.grid(True, alpha=0.25)
+            iteration_axis.legend()
+            iteration_plot_path = os.path.join(output_dir, "iteration_success_comparison.png")
+            iteration_figure.savefig(iteration_plot_path, dpi=180)
+        plt.close(iteration_figure)
+
+        if iteration_rows:
+            iteration_csv_path = os.path.join(output_dir, "iteration_success_comparison.csv")
+            with open(iteration_csv_path, "w", newline="") as iteration_csv_file:
+                writer = csv.DictWriter(
+                    iteration_csv_file,
+                    fieldnames=[
+                        "label",
+                        "run_root",
+                        "task",
+                        "family",
+                        "iteration",
+                        "success_metric",
+                        "success_metric_stderr",
+                        "attempted_runs",
+                        "successful_runs",
+                        "selected_run_idx",
+                        "iteration_count",
+                        "success_metric_target",
+                        "source_log_dir",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerows(iteration_rows)
+
     csv_path = os.path.join(output_dir, "learning_curve_comparison.csv")
     with open(csv_path, "w", newline="") as csv_file:
         writer = csv.DictWriter(
@@ -528,4 +974,9 @@ def export_learning_curve_comparison(
         writer.writeheader()
         writer.writerows(comparison_rows)
 
-    return {"plot_path": plot_path, "csv_path": csv_path}
+    result = {"plot_path": plot_path, "csv_path": csv_path}
+    if iteration_plot_path is not None:
+        result["iteration_plot_path"] = iteration_plot_path
+    if iteration_csv_path is not None:
+        result["iteration_csv_path"] = iteration_csv_path
+    return result

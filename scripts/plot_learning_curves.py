@@ -261,6 +261,10 @@ def main() -> None:
         print(f"[INFO] Compared {len(run_entries)} run(s)")
         print(f"[INFO] Saved comparison plot: {result['plot_path']}")
         print(f"[INFO] Saved comparison CSV: {result['csv_path']}")
+        if "iteration_plot_path" in result:
+            print(f"[INFO] Saved iteration plot: {result['iteration_plot_path']}")
+        if "iteration_csv_path" in result:
+            print(f"[INFO] Saved iteration CSV: {result['iteration_csv_path']}")
         return
 
     multiple_tasks = len(task_filters) > 1 or task_filters[0] is None
@@ -298,6 +302,10 @@ def main() -> None:
         print(f"[INFO] Compared {len(run_entries)} run(s)")
         print(f"[INFO] Saved comparison plot: {result['plot_path']}")
         print(f"[INFO] Saved comparison CSV: {result['csv_path']}")
+        if "iteration_plot_path" in result:
+            print(f"[INFO] Saved iteration plot: {result['iteration_plot_path']}")
+        if "iteration_csv_path" in result:
+            print(f"[INFO] Saved iteration CSV: {result['iteration_csv_path']}")
 
 
 if __name__ == "__main__":

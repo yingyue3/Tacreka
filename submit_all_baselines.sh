@@ -5,19 +5,19 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 TASKS=(
-    "Isaac-Cartpole-Direct-v0"
+    # "Isaac-Cartpole-Direct-v0"
     "Isaac-Quadcopter-Direct-v0"
 )
 
 BASELINES=(
-    "tacreka_sr"
-    "eureka"
+    # "tacreka_sr"
+    # "eureka"
     "revolve_full"
 )
 
 LOG_DIR="${LOG_DIR:-slurm_logs}"
 DEFAULT_TIME="${DEFAULT_TIME:-12:00:00}"
-REVOLVE_FULL_TIME="${REVOLVE_FULL_TIME:-12:00:00}"
+REVOLVE_FULL_TIME="${REVOLVE_FULL_TIME:-24:00:00}"
 MAX_TRAINING_ITERATIONS="${MAX_TRAINING_ITERATIONS:-100}"
 MAX_EUREKA_ITERATIONS="${MAX_EUREKA_ITERATIONS:-10}"
 NUM_REWARD_SEEDS="${NUM_REWARD_SEEDS:-5}"
