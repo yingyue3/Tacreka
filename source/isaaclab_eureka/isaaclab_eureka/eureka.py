@@ -18,7 +18,7 @@ from isaaclab_eureka.config import (
     TASK_SUCCESS_PRE_FEEDBACK_PROMPT,
     TASKS_CFG,
 )
-from isaaclab_eureka.managers import EurekaTaskManager, LLMManager
+from isaaclab_eureka.managers import EurekaTaskManager, LLMManager, ManipulationTaskManager
 from isaaclab_eureka.learning_curve_utils import export_learning_curve_artifacts, resolve_checkpoint_path
 from isaaclab_eureka.utils import load_tensorboard_logs
 
@@ -91,17 +91,30 @@ class Eureka:
         )
 
         print("[INFO]: Setting up the Task Manager...")
-        self._task_manager = EurekaTaskManager(
-            task=task,
-            device=device,
-            env_seed=env_seed,
-            rl_library=rl_library,
-            num_processes=self._num_processes,
-            max_training_iterations=max_training_iterations,
-            success_metric_string=success_metric_string,
-            log_namespace="eureka",
-            rl_log_root_dir=self._rl_runs_dir,
-        )
+        if task == "Isaac-Lift-Cube-Franka-v0":
+            self._task_manager = ManipulationTaskManager(
+                task=task,
+                device=device,
+                env_seed=env_seed,
+                rl_library=rl_library,
+                num_processes=self._num_processes,
+                max_training_iterations=max_training_iterations,
+                success_metric_string=success_metric_string,
+                log_namespace="tacreka_sr",
+                rl_log_root_dir=self._rl_runs_dir,
+            )
+        else:
+            self._task_manager = EurekaTaskManager(
+                task=task,
+                device=device,
+                env_seed=env_seed,
+                rl_library=rl_library,
+                num_processes=self._num_processes,
+                max_training_iterations=max_training_iterations,
+                success_metric_string=success_metric_string,
+                log_namespace="tacreka_sr",
+                rl_log_root_dir=self._rl_runs_dir,
+            )
 
         # We import here because doing this before launching Kit causes GLIBCXX errors
         from torch.utils.tensorboard import SummaryWriter as TensorboardSummaryWriter

@@ -14,3 +14,4 @@ from .tacreka_sr_human import Tacreka_SR
 from .tacreka_sr_auto import Tacreka_SR
 from .tacreka_preference import Tacreka_Preference
 from .tacreka_ranking import Tacreka_Ranking
+from .eureka_human import EurekaHuman
