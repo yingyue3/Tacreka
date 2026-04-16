@@ -82,7 +82,7 @@ def main(args_cli):
         )
         revolve_full.run()
     else:
-        eureka = EurekaHuman(
+        eureka = Eureka(
             task=args_cli.task,
             rl_library=args_cli.rl_library,
             num_parallel_runs=args_cli.num_parallel_runs,
@@ -104,7 +104,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train an RL agent with Eureka.")
     parser.add_argument("--task", type=str, default="Isaac-Cartpole-Direct-v0", help="Name of the task.")
     parser.add_argument(
-        "--num_parallel_runs", type=int, default=3, help="Number of Eureka runs to execute in parallel."
+        "--num_parallel_runs", type=int, default=5, help="Number of Eureka runs to execute in parallel."
     )
     parser.add_argument("--device", type=str, default="cuda", help="The device to run training on.")
     parser.add_argument("--env_seed", type=int, default=42, help="The random seed to use for the environment.")

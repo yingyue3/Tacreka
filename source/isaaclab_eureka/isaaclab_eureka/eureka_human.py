@@ -251,8 +251,27 @@ class EurekaHuman:
                         # Store the best run for this iteration
                         if iter_best_success_metric is None:
                             iter_best_success_metric = success_metric_max
-                        elif abs(iter_best_success_metric - self._success_metric_to_win) > abs(success_metric_max - self._success_metric_to_win):
+                            best_run_checkpoint = new_run_checkpoint
+                            os.rename("./ratings/run_1.mp4", "./ratings/run_2.mp4")
+                        else:
+                            reward_info_v1 = RewardInfo(name="Run 1")
+                            reward_info_v2 = RewardInfo(name="Run 2",)
+                            if best_run_checkpoint == "NONE":
+                                checkpoint_list.append("NONE")
+                            else:
+                                checkpoint_list.append("./ratings/run_2.mp4")
+                            feedback_result = self._feedback_manager.select_video(
+                                video_paths=checkpoint_list,
+                                task_description="Now provided with videos of the two reward sets, please revise your preference on the best feature sets",
+                                reward_infos=[reward_info_v1, reward_info_v2],
+                                allow_text_feedback=False,
+                                allow_rating=False,)
+                            if feedback_result.selected_index == 0:                        # iter_best_success_metric = success_metric_max
+                                best_run_idx = idx
+                                os.rename("./ratings/run_1.mp4", "./ratings/run_2.mp4")
+                        if abs(iter_best_success_metric - self._success_metric_to_win) > abs(success_metric_max - self._success_metric_to_win):
                             iter_best_success_metric = success_metric_max
+
                         new_run_checkpoint = result.get("checkpoint_file") or resolve_checkpoint_path(
                             result.get("run_dir", result["log_dir"])
                         )
@@ -279,31 +298,6 @@ class EurekaHuman:
                                     "best/iteration": iter,
                                     "best/run_idx": idx,
                                 }, step=iter)
-                if iter_best_success_metric is None:
-                    best_run_checkpoint = new_run_checkpoint
-                    if best_run_checkpoint != "NONE":
-                        os.rename("./ratings/run_1.mp4", "./ratings/run_2.mp4")
-                else:
-                    reward_info_v1 = RewardInfo(
-                    name="Run 1"
-                    )
-                    reward_info_v2 = RewardInfo(
-                    name="Run 2",)
-                    if best_run_checkpoint == "NONE":
-                        checkpoint_list.append("NONE")
-                    else:
-                        checkpoint_list.append("./ratings/run_2.mp4")
-                    feedback_result = self._feedback_manager.select_video(
-                        video_paths=checkpoint_list,
-                        task_description="Now provided with videos of the two reward sets, please revise your preference on the best feature sets",
-                        reward_infos=[reward_info_v1, reward_info_v2],
-                        allow_text_feedback=False,
-                        allow_rating=False,
-                    )
-                    if feedback_result.selected_index == 0:                        # iter_best_success_metric = success_metric_max
-                        best_run_idx = idx
-                        os.rename("./ratings/run_1.mp4", "./ratings/run_2.mp4")
-
 
                 # Add the prompts
                 results[idx]["user_prompt"] = user_feedback_prompt
