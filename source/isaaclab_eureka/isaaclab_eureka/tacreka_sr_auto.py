@@ -76,7 +76,7 @@ class Tacreka_SR:
             wandb_entity: The wandb entity/team name.
             wandb_name: The wandb run name. If None, uses timestamp.
         """
-        self._human_feedback = human_feedback
+        self.multi_gpus = False
 
         # Load the task description and success metric
         if task in TASKS_CFG:
@@ -117,7 +117,7 @@ class Tacreka_SR:
                 device=device,
                 env_seed=env_seed,
                 rl_library=rl_library,
-                num_processes=self._num_parallel_runs,
+                num_processes=1,
                 max_training_iterations=max_training_iterations,
                 success_metric_string=success_metric_string,
                 log_namespace="tacreka_sr",
@@ -129,7 +129,7 @@ class Tacreka_SR:
                 device=device,
                 env_seed=env_seed,
                 rl_library=rl_library,
-                num_processes=self._num_parallel_runs,
+                num_processes=1,
                 max_training_iterations=max_training_iterations,
                 success_metric_string=success_metric_string,
                 log_namespace="tacreka_sr",
@@ -200,7 +200,7 @@ class Tacreka_SR:
         # Initial prompts
         feature_gen_prompt = FEATURE_GEN_PROMPT.format(
             task_description=self._task_description,
-            success_metric_to_win=self._success_metric_to_win,
+            # success_metric_to_win=self._success_metric_to_win,
             get_observations_method_as_string=self._task_manager.get_observations_method_as_string,
         )
         # The assistant prompt is used to feed the previous LLM output back into the LLM
@@ -276,7 +276,12 @@ class Tacreka_SR:
             for llm_output in llm_outputs:
                 reward_strings += llm_output["reward_strings"]
             print("+"*10 + " Training Started" + "+"*10)
-            results = self._task_manager.train(reward_strings)
+            if self.multi_gpus:
+                results = self._task_manager.train(reward_strings)
+            else:
+                for reward_string in reward_strings:
+                    results += self._task_manager.train([reward_string])
+            # results = self._task_manager.train(reward_strings)
             # Give TensorBoard time to flush logs before reading them
             import time
             time.sleep(1.0)  # Wait 1 second for TensorBoard to flush
@@ -363,13 +368,13 @@ class Tacreka_SR:
 
             self._log_iteration_results(iter, results)
 
-            if (
-                best_run_results["success_metric"] is not None
-                and np.abs(best_run_results["success_metric"] - self._success_metric_to_win)
-                < self._success_metric_tolerance
-            ):
-                print(f"Task solved with success metric: {best_run_results['success_metric']}")
-                break
+            # if (
+            #     best_run_results["success_metric"] is not None
+            #     and np.abs(best_run_results["success_metric"] - self._success_metric_to_win)
+            #     < self._success_metric_tolerance
+            # ):
+            #     print(f"Task solved with success metric: {best_run_results['success_metric']}")
+            #     break
 
             assistant_prompt = results[best_reward_components]["assistant_prompt"]
             feature_gen_prompt = results[best_reward_components]["user_prompt"]

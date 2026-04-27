@@ -25,48 +25,35 @@ Some helpful tips for writing the reward function code:
     (4) Most importantly, the reward code's input variables must contain only attributes of the provided environment class definition (namely, variables that have prefix self.). Under no circumstance can you introduce new input variables.
 """
 
-FEATURE_GEN_FORMATTING_PROMPT = """
+TEST_FEATURE_GEN_FORMATTING_PROMPT = """
 Instructions:
 1) Propose 1 to 4 candidate features. Each feature must be:
    - Interpretable to a non-expert human (1 sentence description).
    - Measurable from the given observations/actions (no hidden variables).
    - Focused on behavior/outcomes (not "learn faster" or "high return").
-   - As independent as possible (avoid duplicates like "stability" and "uprightness" unless you clearly distinguish them).
+   - As independent as possible.
    - Based on a signal that varies MEANINGFULLY across typical agent states — not a near-constant.
 
 2) For each feature, output the following fields:
    - feature_name: short identifier
    - intent: what this feature encourages (1 sentence)
-   - measurable_signals: which observation/action variables to use (explicit names from OBS_LIST / ACT_LIST)
-   - proxy_metric: a concrete scalar metric formula in plain text (e.g., “abs(pole_angle)”, “-||cart_pos||”, “exp(-k*abs(angle))”)
-   - weight: the weight of the feature in the final reward function
    - desired_direction: maximize or minimize
    - typical_failure_mode: how an agent could "game" this feature if it were rewarded alone
 
-   CRITICAL signal-selection rules — violating these produces useless or misleading reward components:
-   a) Do NOT use the Euclidean norm of a vector whose magnitude is approximately constant.
-      Example: torch.norm(projected_gravity_b, dim=-1) is always approximately 9.81 m/s^2 regardless
-      of the robot's orientation — it carries ZERO information about tilt or uprightness.
-      For uprightness/tilt, use a DIRECTIONAL component instead:
-        projected_gravity_b[:, 2]  (body-frame z-projection; near -9.81 when level, near 0 when severely tilted).
-   b) Do NOT reference environment attributes that are not explicitly listed in the provided observation
-      method (e.g., do not invent "previous_root_lin_vel_b" if it is not in the env class).
-   c) Confirm that your chosen signal differs significantly between a "good" agent state and a "bad" agent
-      state. If the signal_range min and max are very close (< 0.1 difference), pick a different signal.
 Output format: valid JSON ONLY. Do not include markdown, code fences, comments, or extra text.
 """
 
-FEATURE_GEN_FEEDBACK_PROMPT = """
+TEST_FEATURE_GEN_FEEDBACK_PROMPT = """
 We trained a RL policy using the reward function generated from the provided reward feature decomposition and tracked the values of the individual components in the reward function as well as global policy metrics such as success rates and episode lengths after every {feedback_subsampling} epochs and the maximum, mean, minimum values encountered:
 """
 
-FEATURE_GEN_INITIAL_PROMPT = """
+TEST_FEATURE_GEN_INITIAL_PROMPT = """
 You are a reward-design assistant for reinforcement learning.
 
 Goal: Decompose the following RL task into a small set of interpretable "features" that capture what humans would consider good performance. These features will later be turned into reward terms and combined as a weighted sum.
-""" + FEATURE_GEN_FORMATTING_PROMPT
+""" + TEST_FEATURE_GEN_FORMATTING_PROMPT
 
-FEATURE_GEN_EXPLORE_FEEDBACK_PROMPT = """
+TEST_FEATURE_GEN_EXPLORE_FEEDBACK_PROMPT = """
 Please carefully analyze the policy feedback and provide a new reward feature decomposition that sets the training results as close as possible to the desired task score. The new reward feature decomposition should have at least one brand new feature.
 Some helpful tips for analyzing the policy feedback:
     (1) If the success rates are always near zero, then you must add a new reward feature decomposition component or consider dropping existing ones.
@@ -75,9 +62,9 @@ Some helpful tips for analyzing the policy feedback:
         (a) Discard the reward feature entirely and replace with one that has a non-trivial signal_range
     (3) Do NOT reference attributes that are not explicitly provided in the environment's observation method.
 Please analyze each existing reward component in the suggested manner above first, and then write the reward feature decomposition.
-""" + FEATURE_GEN_FORMATTING_PROMPT
+""" + TEST_FEATURE_GEN_FORMATTING_PROMPT
 
-FEATURE_GEN_EXPLOIT_FEEDBACK_PROMPT = """
+TEST_FEATURE_GEN_EXPLOIT_FEEDBACK_PROMPT = """
 Please carefully analyze the policy feedback and provide a new reward feature decomposition that sets the training results as close as possible to the desired task score. The new reward feature decomposition should have at least one feature with changed weights or discard one of the existing features.
 Some helpful tips for analyzing the policy feedback:
     (1) If the success rates are always near zero, then consider dropping unhelpful reward feature components.
@@ -90,7 +77,7 @@ Some helpful tips for analyzing the policy feedback:
     (4) If the total reward grew more than 5x during training, the features are not properly bounded;
         add normalization constraints (e.g., torch.tanh or torch.clamp) in the implementation.
 Please analyze each existing reward feature in the suggested manner above first, and then write the reward feature decomposition.
-""" + FEATURE_GEN_FORMATTING_PROMPT
+""" + TEST_FEATURE_GEN_FORMATTING_PROMPT
 
 # FEATURE_GEN_PROMPT = """
 # Decompose the following RL task into a small set of interpretable "features" that capture what humans would consider good performance. These features will later be turned into reward terms and combined as a weighted sum.
@@ -100,16 +87,17 @@ Please analyze each existing reward feature in the suggested manner above first,
 # - Here is how we get the observations from the environment: {get_observations_method_as_string}
 # """
 
-FEATURE_GEN_PROMPT = """
+TEST_FEATURE_GEN_PROMPT = """
 Decompose the following RL task into a small set of interpretable "features" that capture what humans would consider good performance. These features will later be turned into reward terms and combined as a weighted sum.
 Task context:
 - Task description is: {task_description}
+- The desired task score is: {success_metric_to_win}
 - Here is how we get the observations from the environment: {get_observations_method_as_string}
 """
 
 ############### Single reward function generation templates ###############
 
-FEATURE_AS_ONE_REWARD_FORMATTING_PROMPT = """
+TEST_FEATURE_AS_ONE_REWARD_FORMATTING_PROMPT = """
 Your reward function should use useful variables from the environment as inputs.
 It must comply to the following signature exactly:
 
@@ -165,10 +153,10 @@ Output requirements:
 - The code must define exactly one function:
 """
 
-FEATURE_AS_ONE_REWARD_INITIAL_PROMPT = """
+TEST_FEATURE_AS_ONE_REWARD_INITIAL_PROMPT = """
 You are a reward engineer for reinforcement learning.
 Goal: Write reward functions for an IsaacLab task by turning a given set of human-interpretable features into reward components, then composing them into a final reward as a weighted sum.
-""" + FEATURE_AS_ONE_REWARD_FORMATTING_PROMPT
+""" + TEST_FEATURE_AS_ONE_REWARD_FORMATTING_PROMPT
 
 # FEATURE_AS_ONE_REWARD_PROMPT = """
 # Write a reward function for the following task: {task_description}
@@ -179,7 +167,7 @@ Goal: Write reward functions for an IsaacLab task by turning a given set of huma
 # {FEATURES_JSON}
 # """
 
-FEATURE_AS_ONE_REWARD_PROMPT = """
+TEST_FEATURE_AS_ONE_REWARD_PROMPT = """
 Write a reward function for the following task: {task_description}
 Here is how we get the observations from the environment: {get_observations_method_as_string}
 
@@ -198,16 +186,16 @@ Each feature contains:
 - typical_failure_mode
 '''
 
-FEATURE_AS_ONE_FAILURE_FEEDBACK_PROMPT = """
+TEST_FEATURE_AS_ONE_FAILURE_FEEDBACK_PROMPT = """
 Executing the reward function code above has the following error: {traceback_msg}.
 Please fix the bug and provide a new, improved reward function!
-""" + FEATURE_AS_ONE_REWARD_FORMATTING_PROMPT
+""" + TEST_FEATURE_AS_ONE_REWARD_FORMATTING_PROMPT
 
-FEATURE_AS_ONE_SUCCESS_PRE_FEEDBACK_PROMPT = """
+TEST_FEATURE_AS_ONE_SUCCESS_PRE_FEEDBACK_PROMPT = """
 We trained a RL policy using the provided reward function code and tracked the values of the individual components in the reward function as well as global policy metrics such as success rates and episode lengths after every {feedback_subsampling} epochs and the maximum, mean, minimum values encountered:
 """
 
-FEATURE_AS_ONE_SUCCESS_POST_FEEDBACK_PROMPT = """
+TEST_FEATURE_AS_ONE_SUCCESS_POST_FEEDBACK_PROMPT = """
 Please carefully analyze the policy feedback and provide a new, improved reward function that can better solve the task. Some helpful tips for analyzing the policy feedback:
     (1) If the success rates are always near zero, then you must rewrite the entire reward function.
     (2) If the values for a certain reward component are near identical throughout (Min ≈ Max, range < 0.05),
@@ -224,63 +212,102 @@ Please analyze each existing reward component in the suggested manner above firs
 Features to implement (refined): {FEATURES_JSON}
 """ + DIRECT_WORKFLOW_REWARD_FORMATTING_INSTRUCTIONS
 
-HUMAN_RANKING_FEATURE_REFINEMENT_PROMPT = """
-Please carefully analyze the policy feedback and provide a new reward feature decomposition that sets the training results as close as possible to the desired task score.
-A human observer watched the trained robot policy and ranked the reward features from MOST important to LEAST important based on how much each feature contributes to meaningful, desirable behavior.
 
-Human feature ranking (Rank 1 = most important):
-{ranked_feature_list}
+############### Per-component refinement (locked feature set) ###############
 
-Features explicitly dropped by the human (judged unhelpful or harmful):
-{dropped_feature_list}
+# System prompt used when refining a SINGLE feature in the locked set.
+TEST_PER_COMPONENT_REFINEMENT_SYSTEM_PROMPT = """
+You are a reward-feature refinement assistant for reinforcement learning.
 
-Training performance feedback:
-{eureka_task_feedback}
-
-Human textual feedback (highest priority — act on these suggestions):
-{human_feedback_section}
-Your task is to produce a refined feature set by applying the following rules derived from the human ranking:
-
-RULE 1 — REMOVE all dropped features.
-  The human explicitly removed these from the ranking. Do not include them in the refined feature set.
-  Exception: if removing them would leave fewer than 2 features, keep the least-dropped one and note it.
-
-RULE 2 — AMPLIFY the highest-ranked feature.
-  Multiply its weight by a factor between 1.5× and 3.0×, choosing based on how poorly the
-  task is being solved (use a larger multiplier when task_score is far from the desired value).
-  Do NOT increase the weight beyond a point where it would numerically dominate all others combined.
-
-RULE 3 — PRESERVE the mid-ranked features.
-  Keep their feature_name, intent, measurable_signals, proxy_metric, and desired_direction unchanged.
-  You MAY slightly adjust their weights to keep the total weight sum in the original ballpark (within 2×).
-
-RULE 4 — ACT on human feedback.
-  If the human provided textual feedback above, treat it as the highest-priority signal.
-  Add, modify, or replace features as the human suggests, as long as they are observable from the
-  environment's observation method and produce a meaningful proxy metric.
-
-RULE 5 — VALIDATE signal quality.
-  For any retained or newly added feature, verify:
-  (a) Its measurable_signals exist in the environment observation method.
-  (b) Its proxy_metric produces a signal that varies meaningfully between good and bad agent states.
-  (c) It does NOT use torch.norm(projected_gravity_b) as an uprightness proxy (use projected_gravity_b[:, 2] instead).
-  If a retained feature fails validation, fix the proxy_metric or replace the feature with a corrected one.
-""" + FEATURE_GEN_FORMATTING_PROMPT
-
-DECOMPOSE_REWARD_PROMPT = """
-You are a reward engineer for reinforcement learning.
-Goal: Implement ONE reward component for ONE specific feature of an IsaacLab RL task. This reward will later be combined with other components in a weighted sum, so it must be well-scaled and interpretable.
-Generate Based on the following features: 
-<features/>
-   feature_name: {feature_name}
-   intent: {intent}
-   measurable_signals: {measurable_signals}
-   proxy_metric: {proxy_metric}
-   desired_direction: {desired_direction}
-   typical_failure_mode: {typical_failure_mode}
-</features>
-The task description is: {task_description}
-The desired task score is: {success_metric_to_win}
-Here is how we get the observations from the environment:
-{get_observations_method_as_string}
+Your job is to refine ONE feature of an already-locked reward feature set, based on
+the per-component statistics observed during the most recent training run. The set of
+feature_names is FROZEN — you must NEVER add features, remove features, rename features,
+merge features, or split features. You only revise the *description* of the single
+feature you are given so that the next reward implementation is more effective.
 """
+
+TEST_PER_COMPONENT_REFINEMENT_PROMPT = """
+We are evolving a reward function for an Isaac Lab RL task. The reward feature set was
+locked after the initial exploration phase. We are now refining EACH feature individually,
+one at a time, based on how it behaved during the latest training run.
+
+Task: {task_description}
+The desired task_score to reach is: {success_metric_to_win}.
+Observation method (do NOT invent new attributes):
+{get_observations_method_as_string}
+
+You are refining ONE feature in the locked set. The other features are refined separately.
+You MUST keep `feature_name` exactly as given. You MAY revise:
+  - intent
+  - desired_direction
+  - typical_failure_mode
+
+The feature being refined (from the locked set):
+{feature_json}
+
+For context, the full locked set of feature names is:
+{locked_feature_names}
+
+Component-level feedback for THIS component during the last run
+(sub-sampled trajectory, then min/max/mean):
+{component_feedback}
+
+Overall task feedback for the last run (task_score trajectory and aggregate metrics):
+{task_feedback}
+
+Refinement guidance — go through each rule before producing your output:
+  (1) NEAR-CONSTANT SIGNAL. If this component's values are nearly constant (Min ≈ Max,
+      range < 0.05), the underlying signal carries no learning gradient. Rewrite `intent`
+      so the next reward implementation will pick a more variable, behaviour-correlated
+      signal (e.g., directional projections instead of vector norms).
+  (2) DOMINATING MAGNITUDE. If this component's Max is more than 5x larger than the other
+      components' Maxes (visible in the task feedback), update `typical_failure_mode` to
+      flag the dominance and adjust `intent` so the next implementation uses tighter
+      normalisation (tanh / clamp / smaller temperature).
+  (3) MISALIGNED WITH TASK. If this component grew while task_score moved AWAY from
+      {success_metric_to_win}, the component is likely anti-correlated with task success.
+      Flip `desired_direction` or rewrite `intent` so the next implementation penalises
+      the corresponding behaviour instead of rewarding it.
+  (4) WELL-BEHAVED. If this component is clearly aligned with task progress and varies
+      meaningfully, you may keep it almost the same. Returning identical text is allowed
+      ONLY when the component is clearly aligned with task progress.
+  (5) DO NOT add or remove components. DO NOT rename. Refine THIS feature only.
+
+Output format: VALID JSON ONLY (no markdown, no code fences, no comments).
+Schema:
+{{
+  "feature_name": "...",        // MUST equal the feature_name above
+  "intent": "...",
+  "desired_direction": "...",
+  "typical_failure_mode": "..."
+}}
+"""
+
+
+############### Reward generation from a refined LOCKED feature set ###############
+
+TEST_LOCKED_FEATURE_REWARD_PROMPT = """
+Write a reward function for the following task: {task_description}
+Here is how we get the observations from the environment: {get_observations_method_as_string}
+
+The reward function MUST implement EXACTLY the following LOCKED set of features.
+Do NOT add, remove, rename, or merge any feature. Implement one reward component per
+feature. Use the same feature_name as the dict key in `individual_rewards_dict` so the
+training feedback can be parsed back per-component.
+
+Locked + refined features (this iteration):
+{FEATURES_JSON}
+
+Each feature in the locked set was refined INDIVIDUALLY based on its observed signal in
+the previous training run. Use each feature's refined `intent`, `desired_direction`, and
+`typical_failure_mode` to choose the signal, transformation, and scale for that component.
+
+Previous reward function code (for context — improve it, but keep the same locked
+feature_names):
+```python
+{PREVIOUS_REWARD_CODE}
+```
+
+Last run's task feedback (for context):
+{task_feedback}
+""" + TEST_FEATURE_AS_ONE_REWARD_FORMATTING_PROMPT

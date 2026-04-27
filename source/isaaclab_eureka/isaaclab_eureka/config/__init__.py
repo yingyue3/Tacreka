@@ -6,3 +6,4 @@
 from .tasks import *
 from .prompt_templates_tac import *
 from .prompt_templates import *
+from .prompt_templates_testing import *

@@ -5,11 +5,6 @@
 """Template strings used for prompting in Isaac Lab Eureka."""
 
 
-from cgi import test
-
-
-
-
 DIRECT_WORKFLOW_REWARD_FORMATTING_INSTRUCTIONS = """
 Your reward function should use useful variables from the environment as inputs.
 It must comply to the following signature exactly:
@@ -61,9 +56,15 @@ Please analyze each existing reward component in the suggested manner above firs
 """ + DIRECT_WORKFLOW_REWARD_FORMATTING_INSTRUCTIONS
 
 
+# DIRECT_WORKFLOW_TASK_PROMPT = """
+# Write a reward function for the following task: {task_description}
+# The desired task score is: {success_metric_to_win}
+# Here is how we get the observations from the environment:
+# {get_observations_method_as_string}
+# """
+
 DIRECT_WORKFLOW_TASK_PROMPT = """
 Write a reward function for the following task: {task_description}
-The desired task score is: {success_metric_to_win}
 Here is how we get the observations from the environment:
 {get_observations_method_as_string}
 """

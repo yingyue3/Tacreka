@@ -9,3 +9,4 @@ from .llm_manager_tac import LLMManagerTac
 from .manipulation_task_manager import ManipulationTaskManager
 from .record_manager_quad import RecordManagerQuad
 from .feedback_manager import HumanFeedbackManager
+from .video_isaac import VideoIsaac

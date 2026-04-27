@@ -34,7 +34,7 @@ from isaaclab_eureka.config import (
     FEATURE_AS_ONE_SUCCESS_PRE_FEEDBACK_PROMPT,
     TASK_SUCCESS_PRE_FEEDBACK_PROMPT
 )
-from isaaclab_eureka.managers import EurekaTaskManager, LLMManagerTac, RecordManagerQuad
+from isaaclab_eureka.managers import EurekaTaskManager, LLMManagerTac, RecordManagerQuad, VideoIsaac, ManipulationTaskManager
 from isaaclab_eureka.utils import load_tensorboard_logs
 from isaaclab_eureka.managers.feedback_manager import (
     HumanFeedbackManager, 
@@ -82,7 +82,12 @@ class Tacreka_Preference:
             wandb_entity: The wandb entity/team name.
             wandb_name: The wandb run name. If None, uses timestamp.
         """
-        self._human_feedback = human_feedback
+        self.local_training = True
+        if task == "Isaac-Lift-Cube-Franka-v0":
+            self.manipulation_task = True
+        else:
+            self.manipulation_task = False
+
 
         # Load the task description and success metric
         if task in TASKS_CFG:
@@ -117,26 +122,46 @@ class Tacreka_Preference:
         )
 
         print("[INFO]: Setting up the Task Manager...")
-        self._task_manager = EurekaTaskManager(
-            task=task,
-            device=device,
-            env_seed=env_seed,
-            rl_library=rl_library,
-            num_processes=self._num_parallel_runs,
-            max_training_iterations=max_training_iterations,
-            success_metric_string=success_metric_string,
-            log_namespace="tacreka_sr",
-            rl_log_root_dir=self._rl_runs_dir,
-        )
+        if self.manipulation_task:
+            self._task_manager = ManipulationTaskManager(
+                task=task,
+                device=device,
+                env_seed=env_seed,
+                rl_library=rl_library,
+                num_processes=1,
+                max_training_iterations=max_training_iterations,
+                success_metric_string=success_metric_string,
+                log_namespace="tacreka_sr",
+                rl_log_root_dir=self._rl_runs_dir,
+            )
+        else:       
+            self._task_manager = EurekaTaskManager(
+                task=task,
+                device=device,
+                env_seed=env_seed,
+                rl_library=rl_library,
+                num_processes=1,
+                max_training_iterations=max_training_iterations,
+                success_metric_string=success_metric_string,
+                log_namespace="tacreka_sr",
+                rl_log_root_dir=self._rl_runs_dir,
+            )
 
         print("[INFO]: Setting up the Record Manager...")
-        self._record_manager = RecordManagerQuad(
-            task=task,
-            num_envs=1,
-            device=device,
-            max_frames=900,
-            num_episodes=1,
-        )
+        if not self.manipulation_task:
+            self._record_manager = RecordManagerQuad(
+                task=task,
+                num_envs=1,
+                device=device,
+                max_frames=900,
+                num_episodes=1,
+            )
+        else:
+            self._record_manager = VideoIsaac(
+                task=task,
+                device=device,
+            )
+        
 
         print("[INFO]: Setting up the Feedback Manager...")
         self._feedback_manager = HumanFeedbackManager(port=8889)
@@ -266,7 +291,12 @@ class Tacreka_Preference:
             for llm_output in llm_outputs:
                 reward_strings += llm_output["reward_strings"]
             print("+"*10 + " Training Started" + "+"*10)
-            results = self._task_manager.train(reward_strings)
+            if not self.local_training:
+                results = self._task_manager.train(reward_strings)
+            else:
+                for reward_string in reward_strings:
+                    results += self._task_manager.train([reward_string])
+            # results = self._task_manager.train(reward_strings)
             # Give TensorBoard time to flush logs before reading them
             import time
             time.sleep(1.0)  # Wait 1 second for TensorBoard to flush

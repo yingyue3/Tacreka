@@ -114,7 +114,7 @@ class EurekaHuman:
                 device=device,
                 env_seed=env_seed,
                 rl_library=rl_library,
-                num_processes=self._num_processes,
+                num_processes=1,
                 max_training_iterations=max_training_iterations,
                 success_metric_string=success_metric_string,
                 log_namespace="tacreka_sr",
@@ -202,13 +202,14 @@ class EurekaHuman:
             # Generate the GPT reward methods
             llm_outputs = self._llm_manager.prompt(user_prompt=user_prompt, assistant_prompt=assistant_prompt)
             gpt_reward_method_strings = llm_outputs["reward_strings"]
+            results = []
             # Log the llm outputs
             for idx, gpt_reward_method_string in enumerate(gpt_reward_method_strings):
                 self._tensorboard_writer.add_text(f"Run_{idx}/raw_llm_output", llm_outputs["raw_outputs"][idx], iter)
                 if self._use_wandb and self._wandb:
                     self._wandb.log({f"Run_{idx}/raw_llm_output": llm_outputs["raw_outputs"][idx]}, step=iter)
             # Train the RL agent
-            results = self._task_manager.train(gpt_reward_method_strings)
+                results += self._task_manager.train([gpt_reward_method_string])
             # Give TensorBoard time to flush logs before reading them
             import time
             time.sleep(1.0)  # Wait 1 second for TensorBoard to flush
@@ -247,8 +248,14 @@ class EurekaHuman:
                             f"Run_{idx}/rewards_correlation": rewards_correlation,
                         }, step=iter)
                     # Check the best performing metric, determined by the minimum distance from the win target
+                    
                     if success_metric_max is not None:
                         # Store the best run for this iteration
+                        new_run_checkpoint = result.get("checkpoint_file") or resolve_checkpoint_path(
+                            result.get("run_dir", result["log_dir"])
+                        )
+                        self._record_manager.record(checkpoint=new_run_checkpoint, output_file="./ratings/run_1.mp4")
+                        checkpoint_list.append("./ratings/run_1.mp4")
                         if iter_best_success_metric is None:
                             iter_best_success_metric = success_metric_max
                             best_run_checkpoint = new_run_checkpoint
@@ -269,14 +276,8 @@ class EurekaHuman:
                             if feedback_result.selected_index == 0:                        # iter_best_success_metric = success_metric_max
                                 best_run_idx = idx
                                 os.rename("./ratings/run_1.mp4", "./ratings/run_2.mp4")
-                        if abs(iter_best_success_metric - self._success_metric_to_win) > abs(success_metric_max - self._success_metric_to_win):
-                            iter_best_success_metric = success_metric_max
+                                iter_best_success_metric = success_metric_max
 
-                        new_run_checkpoint = result.get("checkpoint_file") or resolve_checkpoint_path(
-                            result.get("run_dir", result["log_dir"])
-                        )
-                        self._record_manager.record(checkpoint=new_run_checkpoint, output_file="./ratings/run_1.mp4")
-                        checkpoint_list.append("./ratings/run_1.mp4")
                         # Store the best metric across all iterations
                         if best_run_results["success_metric"] is None or (
                             np.abs(iter_best_success_metric - self._success_metric_to_win)
@@ -305,13 +306,13 @@ class EurekaHuman:
 
             self._log_iteration_results(iter, results)
 
-            # if (
-            #     best_run_results["success_metric"] is not None
-            #     and np.abs(best_run_results["success_metric"] - self._success_metric_to_win)
-            #     < self._success_metric_tolerance
-            # ):
-            #     print(f"Task solved with success metric: {best_run_results['success_metric']}")
-            #     break
+            if (
+                best_run_results["success_metric"] is not None
+                and np.abs(best_run_results["success_metric"] - self._success_metric_to_win)
+                < self._success_metric_tolerance
+            ):
+                print(f"Task solved with success metric: {best_run_results['success_metric']}")
+                break
 
             assistant_prompt = results[best_run_idx]["assistant_prompt"]
             user_prompt = results[best_run_idx]["user_prompt"]

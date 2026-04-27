@@ -377,7 +377,7 @@
     
             <div class="task-info">
                 <h2>Task Description</h2>
-                <p>bring the quadcopter to the target position: self._desired_pos_w, while making sure it flies smoothly</p>
+                <p>Now provided with videos of the two reward sets, please revise your preference on the best feature sets</p>
             </div>
             
     
@@ -386,6 +386,11 @@
             <div class="video-card" id="card-0">
                 <h3>Option 1</h3>
                 
+                    <div class="no-video">
+                        <span class="no-video-icon">🎬</span>
+                        <p>No video available</p>
+                    </div>
+                    
                 
         <div class="reward-info-container">
             <h4 class="reward-title">Run 1</h4>
@@ -398,105 +403,105 @@
                 
             <div class="feature-card">
                 <div class="feature-header">
-                    <span class="feature-name">position_error</span>
-                    <span class="feature-weight">weight: 5.0</span>
+                    <span class="feature-name">reaching_distance</span>
+                    <span class="feature-weight">weight: 1.0</span>
                     <span class="feature-direction" style="color: #f87171;">
                         ↓ minimize
                     </span>
                 </div>
                 <div class="feature-intent">
-                    <strong>Intent:</strong> Minimize the distance between the quadcopter's current position and the desired position.
+                    <strong>Intent:</strong> Encourage the end-effector to approach the object to facilitate grasping.
                 </div>
                 <div class="feature-details">
                     <div class="detail-row">
                         <span class="detail-label">Signals:</span>
-                        <code>desired_pos_b</code>
+                        <code>self.scene['object'].data.root_pos_w, self.scene['ee_frame'].data.target_pos_w[..., 0, :]</code>
                     </div>
                     <div class="detail-row">
                         <span class="detail-label">Metric:</span>
-                        <code>torch.norm(desired_pos_b)</code>
+                        <code>torch.linalg.norm(self.scene['object'].data.root_pos_w - self.scene['ee_frame'].data.target_pos_w[..., 0, :], dim=1)</code>
                     </div>
                 </div>
                 <div class="feature-failure">
-                    <strong>Failure mode:</strong> An agent could hover too far from the target without attempting to move closer.
+                    <strong>Failure mode:</strong> An agent could move back and forth without actually reaching the object, maintained by only focusing on distance.
                 </div>
             </div>
             
             <div class="feature-card">
                 <div class="feature-header">
-                    <span class="feature-name">speed</span>
-                    <span class="feature-weight">weight: 4.0</span>
-                    <span class="feature-direction" style="color: #f87171;">
-                        ↓ minimize
-                    </span>
-                </div>
-                <div class="feature-intent">
-                    <strong>Intent:</strong> Encourage the quadcopter to maintain a moderate and smooth velocity without abrupt changes.
-                </div>
-                <div class="feature-details">
-                    <div class="detail-row">
-                        <span class="detail-label">Signals:</span>
-                        <code>root_lin_vel_b</code>
-                    </div>
-                    <div class="detail-row">
-                        <span class="detail-label">Metric:</span>
-                        <code>torch.norm(root_lin_vel_b)</code>
-                    </div>
-                </div>
-                <div class="feature-failure">
-                    <strong>Failure mode:</strong> An agent might keep a low speed to avoid penalties, reducing its progress towards the target.
-                </div>
-            </div>
-            
-            <div class="feature-card">
-                <div class="feature-header">
-                    <span class="feature-name">angular_velocity</span>
-                    <span class="feature-weight">weight: 4.0</span>
-                    <span class="feature-direction" style="color: #f87171;">
-                        ↓ minimize
-                    </span>
-                </div>
-                <div class="feature-intent">
-                    <strong>Intent:</strong> Encourage minimal rotation to ensure smooth flight without erratic movements.
-                </div>
-                <div class="feature-details">
-                    <div class="detail-row">
-                        <span class="detail-label">Signals:</span>
-                        <code>root_ang_vel_b</code>
-                    </div>
-                    <div class="detail-row">
-                        <span class="detail-label">Metric:</span>
-                        <code>torch.norm(root_ang_vel_b)</code>
-                    </div>
-                </div>
-                <div class="feature-failure">
-                    <strong>Failure mode:</strong> Excessive rotation may be minimized, but the agent could perform an overly cautious flight.
-                </div>
-            </div>
-            
-            <div class="feature-card">
-                <div class="feature-header">
-                    <span class="feature-name">optimal_flight_path</span>
-                    <span class="feature-weight">weight: 5.0</span>
+                    <span class="feature-name">lifting_height</span>
+                    <span class="feature-weight">weight: 1.0</span>
                     <span class="feature-direction" style="color: #4ade80;">
                         ↑ maximize
                     </span>
                 </div>
                 <div class="feature-intent">
-                    <strong>Intent:</strong> Reward maintaining a direct line of travel towards the target position.
+                    <strong>Intent:</strong> Reward the agent for lifting the object above a minimum height to ensure it is securely grasped.
                 </div>
                 <div class="feature-details">
                     <div class="detail-row">
                         <span class="detail-label">Signals:</span>
-                        <code>root_lin_vel_b, desired_pos_b</code>
+                        <code>self.scene['object'].data.root_pos_w</code>
                     </div>
                     <div class="detail-row">
                         <span class="detail-label">Metric:</span>
-                        <code>-torch.dot(root_lin_vel_b, desired_pos_b)</code>
+                        <code>self.scene['object'].data.root_pos_w[:, 2]</code>
                     </div>
                 </div>
                 <div class="feature-failure">
-                    <strong>Failure mode:</strong> An agent might maintain speed but travel in an indirect route to minimize this score.
+                    <strong>Failure mode:</strong> The agent could lift the object but then immediately drop it back down, failing to move to the goal.
+                </div>
+            </div>
+            
+            <div class="feature-card">
+                <div class="feature-header">
+                    <span class="feature-name">goal_tracking_distance</span>
+                    <span class="feature-weight">weight: 1.0</span>
+                    <span class="feature-direction" style="color: #f87171;">
+                        ↓ minimize
+                    </span>
+                </div>
+                <div class="feature-intent">
+                    <strong>Intent:</strong> Encourage the agent to bring the lifted object closer to the target goal location.
+                </div>
+                <div class="feature-details">
+                    <div class="detail-row">
+                        <span class="detail-label">Signals:</span>
+                        <code>self.scene['object'].data.root_pos_w, self.command_manager.get_command('object_pose')[:, :3]</code>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Metric:</span>
+                        <code>torch.linalg.norm(self.scene['object'].data.root_pos_w - (self.scene['robot'].data.root_pos_w + self.command_manager.get_command('object_pose')[:, :3]), dim=1)</code>
+                    </div>
+                </div>
+                <div class="feature-failure">
+                    <strong>Failure mode:</strong> An agent might get close to the goal without making necessary adjustments based on the object's position.
+                </div>
+            </div>
+            
+            <div class="feature-card">
+                <div class="feature-header">
+                    <span class="feature-name">gripper_state</span>
+                    <span class="feature-weight">weight: 0.5</span>
+                    <span class="feature-direction" style="color: #f87171;">
+                        ↓ minimize
+                    </span>
+                </div>
+                <div class="feature-intent">
+                    <strong>Intent:</strong> Promote actions that effectively close the gripper for grasping the object when close enough.
+                </div>
+                <div class="feature-details">
+                    <div class="detail-row">
+                        <span class="detail-label">Signals:</span>
+                        <code>self.last_action('panda_finger_joint1'), self.last_action('panda_finger_joint2')</code>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Metric:</span>
+                        <code>torch.sum(abs(self.last_action('panda_finger_joint1') - 0.04)) + torch.sum(abs(self.last_action('panda_finger_joint2') - 0.04))</code>
+                    </div>
+                </div>
+                <div class="feature-failure">
+                    <strong>Failure mode:</strong> If only the gripper state is rewarded, the agent might close the gripper prematurely or far from the object.
                 </div>
             </div>
             
@@ -513,6 +518,11 @@
             <div class="video-card" id="card-1">
                 <h3>Option 2</h3>
                 
+                    <div class="no-video">
+                        <span class="no-video-icon">🎬</span>
+                        <p>No video available</p>
+                    </div>
+                    
                 
         <div class="reward-info-container">
             <h4 class="reward-title">Run 2</h4>
@@ -525,105 +535,105 @@
                 
             <div class="feature-card">
                 <div class="feature-header">
-                    <span class="feature-name">position_error</span>
-                    <span class="feature-weight">weight: 5.0</span>
+                    <span class="feature-name">reaching_object</span>
+                    <span class="feature-weight">weight: 2.0</span>
                     <span class="feature-direction" style="color: #f87171;">
                         ↓ minimize
                     </span>
                 </div>
                 <div class="feature-intent">
-                    <strong>Intent:</strong> Minimize the distance between the quadcopter's current position and the desired position.
+                    <strong>Intent:</strong> Encourage the agent to position the end-effector close enough to the cube for a successful grasp.
                 </div>
                 <div class="feature-details">
                     <div class="detail-row">
                         <span class="detail-label">Signals:</span>
-                        <code>desired_pos_b</code>
+                        <code>object_position, ee_frame.data.target_pos_w[..., 0, :]</code>
                     </div>
                     <div class="detail-row">
                         <span class="detail-label">Metric:</span>
-                        <code>torch.norm(desired_pos_b)</code>
+                        <code>torch.norm(object_position - ee_frame.data.target_pos_w[..., 0, :], dim=1)</code>
                     </div>
                 </div>
                 <div class="feature-failure">
-                    <strong>Failure mode:</strong> An agent could hover too far from the target without attempting to move closer.
+                    <strong>Failure mode:</strong> An agent might approach the cube without accurately positioning the gripper, resulting in a failure to grasp.
                 </div>
             </div>
             
             <div class="feature-card">
                 <div class="feature-header">
-                    <span class="feature-name">speed</span>
+                    <span class="feature-name">lifting_object</span>
+                    <span class="feature-weight">weight: 3.0</span>
+                    <span class="feature-direction" style="color: #4ade80;">
+                        ↑ maximize
+                    </span>
+                </div>
+                <div class="feature-intent">
+                    <strong>Intent:</strong> Encourage the agent to successfully lift the cube above a minimum height.
+                </div>
+                <div class="feature-details">
+                    <div class="detail-row">
+                        <span class="detail-label">Signals:</span>
+                        <code>object_position</code>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Metric:</span>
+                        <code>torch.where(object_position[:,2] > 0.1, 1.0, 0.0)</code>
+                    </div>
+                </div>
+                <div class="feature-failure">
+                    <strong>Failure mode:</strong> An agent could lift the cube slightly and then drop it immediately to gain reward without actually manipulating it correctly.
+                </div>
+            </div>
+            
+            <div class="feature-card">
+                <div class="feature-header">
+                    <span class="feature-name">goal_tracking</span>
                     <span class="feature-weight">weight: 3.0</span>
                     <span class="feature-direction" style="color: #f87171;">
                         ↓ minimize
                     </span>
                 </div>
                 <div class="feature-intent">
-                    <strong>Intent:</strong> Encourage the quadcopter to maintain a moderate and smooth velocity.
+                    <strong>Intent:</strong> Encourage the agent to bring the cube close to the target goal position after lifting it.
                 </div>
                 <div class="feature-details">
                     <div class="detail-row">
                         <span class="detail-label">Signals:</span>
-                        <code>root_lin_vel_b</code>
+                        <code>object_position, generated_commands('object_pose')</code>
                     </div>
                     <div class="detail-row">
                         <span class="detail-label">Metric:</span>
-                        <code>torch.norm(root_lin_vel_b)</code>
+                        <code>torch.norm(object_position - generated_commands('object_pose')[:, :3], dim=1)</code>
                     </div>
                 </div>
                 <div class="feature-failure">
-                    <strong>Failure mode:</strong> An agent might try to hover and avoid moving, which may not be desirable.
+                    <strong>Failure mode:</strong> An agent might try to move the cube erratically back and forth at a distance to minimize this distance without accurately tracking the goal.
                 </div>
             </div>
             
             <div class="feature-card">
                 <div class="feature-header">
-                    <span class="feature-name">angular_velocity</span>
-                    <span class="feature-weight">weight: 4.0</span>
+                    <span class="feature-name">joint_smoothness</span>
+                    <span class="feature-weight">weight: 1.0</span>
                     <span class="feature-direction" style="color: #f87171;">
                         ↓ minimize
                     </span>
                 </div>
                 <div class="feature-intent">
-                    <strong>Intent:</strong> Encourage minimal rotation to ensure smooth flight without erratic behavior.
+                    <strong>Intent:</strong> Encourage the agent to move the joints smoothly to avoid abrupt motions.
                 </div>
                 <div class="feature-details">
                     <div class="detail-row">
                         <span class="detail-label">Signals:</span>
-                        <code>root_ang_vel_b</code>
+                        <code>joint_vel</code>
                     </div>
                     <div class="detail-row">
                         <span class="detail-label">Metric:</span>
-                        <code>torch.norm(root_ang_vel_b)</code>
+                        <code>torch.sum(torch.square(joint_vel), dim=1)</code>
                     </div>
                 </div>
                 <div class="feature-failure">
-                    <strong>Failure mode:</strong> Excessive rotation may be minimized, but the agent could perform an overly cautious flight.
-                </div>
-            </div>
-            
-            <div class="feature-card">
-                <div class="feature-header">
-                    <span class="feature-name">gravity_projection</span>
-                    <span class="feature-weight">weight: 4.0</span>
-                    <span class="feature-direction" style="color: #4ade80;">
-                        ↑ maximize
-                    </span>
-                </div>
-                <div class="feature-intent">
-                    <strong>Intent:</strong> Encourage the quadcopter to maintain a stable orientation by minimizing unwanted tilt.
-                </div>
-                <div class="feature-details">
-                    <div class="detail-row">
-                        <span class="detail-label">Signals:</span>
-                        <code>projected_gravity_b</code>
-                    </div>
-                    <div class="detail-row">
-                        <span class="detail-label">Metric:</span>
-                        <code>abs(projected_gravity_b[:,2])</code>
-                    </div>
-                </div>
-                <div class="feature-failure">
-                    <strong>Failure mode:</strong> If rewarded exclusively for this feature, the agent may not actively control position.
+                    <strong>Failure mode:</strong> An agent may achieve the task while making rapid, jerky movements, behaving in a way that leads to mechanical stress or inefficiency.
                 </div>
             </div>
             
