@@ -297,13 +297,15 @@ class Eureka:
 
             self._log_iteration_results(iter, results)
 
-            if (
-                best_run_results["success_metric"] is not None
-                and np.abs(best_run_results["success_metric"] - self._success_metric_to_win)
-                < self._success_metric_tolerance
-            ):
-                print(f"Task solved with success metric: {best_run_results['success_metric']}")
-                break
+            # Disabled early stopping on hitting the success metric target so the
+            # runner always uses the full outer-iteration budget.
+            # if (
+            #     best_run_results["success_metric"] is not None
+            #     and np.abs(best_run_results["success_metric"] - self._success_metric_to_win)
+            #     < self._success_metric_tolerance
+            # ):
+            #     print(f"Task solved with success metric: {best_run_results['success_metric']}")
+            #     break
 
             assistant_prompt = results[best_run_idx]["assistant_prompt"]
             user_prompt = results[best_run_idx]["user_prompt"]
