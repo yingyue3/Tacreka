@@ -11,8 +11,9 @@ from isaaclab_eureka import Revolve, RevolveFull
 from isaaclab_eureka.eureka import Eureka
 from isaaclab_eureka.eureka_human import EurekaHuman
 from isaaclab_eureka.tacreka_ranking import Tacreka_Ranking
-from isaaclab_eureka.tacreka_preference import Tacreka_Preference
+# from isaaclab_eureka.tacreka_preference import Tacreka_Preference
 from isaaclab_eureka.tacreka_sr_auto import Tacreka_SR
+# from isaaclab_eureka.tacreka_sr_traj import Tacreka_SR_Traj
 
 
 def main(args_cli):
@@ -31,6 +32,29 @@ def main(args_cli):
             wandb_project=args_cli.wandb_project,
             wandb_entity=args_cli.wandb_entity,
             wandb_name=args_cli.wandb_name,
+        )
+        tacreka.run(max_eureka_iterations=args_cli.max_eureka_iterations)
+    elif args_cli.baseline == "tacreka_sr_traj":
+        tacreka = Tacreka_SR_Traj(
+            task=args_cli.task,
+            rl_library=args_cli.rl_library,
+            num_parallel_runs=args_cli.num_parallel_runs,
+            device=args_cli.device,
+            env_seed=args_cli.env_seed,
+            max_training_iterations=args_cli.max_training_iterations,
+            feedback_subsampling=args_cli.feedback_subsampling,
+            temperature=args_cli.temperature,
+            gpt_model=args_cli.gpt_model,
+            use_wandb=args_cli.use_wandb,
+            wandb_project=args_cli.wandb_project,
+            wandb_entity=args_cli.wandb_entity,
+            wandb_name=args_cli.wandb_name,
+            record_every=args_cli.record_every,
+            record_num_episodes=args_cli.record_num_episodes,
+            record_num_envs=args_cli.record_num_envs,
+            record_gamma=args_cli.record_gamma,
+            record_only_best_per_iter=args_cli.record_only_best_per_iter,
+            record_in_background=args_cli.record_in_background,
         )
         tacreka.run(max_eureka_iterations=args_cli.max_eureka_iterations)
     elif args_cli.baseline == "revolve":
@@ -139,7 +163,7 @@ if __name__ == "__main__":
         "--baseline",
         type=str,
         default="tacreka_sr",
-        choices=["tacreka_sr", "eureka", "revolve", "revolve_full"],
+        choices=["tacreka_sr", "tacreka_sr_traj", "eureka", "revolve", "revolve_full"],
         help="Choose between Tacreka single-reward (default), Eureka, REvolve pairwise, or REvolve full baseline.",
     )
     parser.add_argument(
@@ -188,6 +212,40 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Directory containing human feedback response CSVs organized by generation (e.g., generation_0/responses_*.csv).",
+    )
+    parser.add_argument(
+        "--record_every",
+        type=int,
+        default=100,
+        help="(tacreka_sr_traj) Sub-sample model_*.pt checkpoints every N PPO iterations.",
+    )
+    parser.add_argument(
+        "--record_num_episodes",
+        type=int,
+        default=8,
+        help="(tacreka_sr_traj) How many complete episodes to roll out per snapshot.",
+    )
+    parser.add_argument(
+        "--record_num_envs",
+        type=int,
+        default=8,
+        help="(tacreka_sr_traj) Parallel envs to use during recording rollouts.",
+    )
+    parser.add_argument(
+        "--record_gamma",
+        type=float,
+        default=1.0,
+        help="(tacreka_sr_traj) Discount factor for the saved per-episode return summaries.",
+    )
+    parser.add_argument(
+        "--record_only_best_per_iter",
+        action="store_true",
+        help="(tacreka_sr_traj) Only record the best run per Eureka iteration.",
+    )
+    parser.add_argument(
+        "--record_in_background",
+        action="store_true",
+        help="(tacreka_sr_traj) Run the recorder asynchronously so the next iteration can start training immediately.",
     )
     parser.add_argument(
         "--use_wandb",

@@ -32,7 +32,8 @@ from isaaclab_eureka.config import (
     FEATURE_AS_ONE_FAILURE_FEEDBACK_PROMPT,
     FEATURE_AS_ONE_SUCCESS_POST_FEEDBACK_PROMPT,
     FEATURE_AS_ONE_SUCCESS_PRE_FEEDBACK_PROMPT,
-    TASK_SUCCESS_PRE_FEEDBACK_PROMPT
+    TASK_SUCCESS_PRE_FEEDBACK_PROMPT,
+    FEATURE_AS_ONE_NEW_FEATURES_FEEDBACK_PROMPT
 )
 from isaaclab_eureka.managers import EurekaTaskManager, LLMManagerTac, RecordManagerQuad, VideoIsaac, ManipulationTaskManager
 from isaaclab_eureka.utils import load_tensorboard_logs
@@ -241,10 +242,10 @@ class Tacreka_Preference:
                 feature_strings = feature_gen_outputs["feature_strings"]
                 print(f"\n{'+' * 20} {len(feature_strings)} Features Generated {'+' * 20} \n")
             else:
-                feature_gen_outputs_explore = self._llm_manager.feature_gen(user_prompt=feature_gen_prompt + FEATURE_GEN_EXPLORE_FEEDBACK_PROMPT, assistant_prompt=assistant_prompt, num_suggestion=1)
-                feature_gen_outputs_exploit = self._llm_manager.feature_gen(user_prompt=feature_gen_prompt + FEATURE_GEN_EXPLOIT_FEEDBACK_PROMPT, assistant_prompt=assistant_prompt, num_suggestion=1)
-                feature_gen_outputs["raw_outputs"] = [assistant_prompt, feature_gen_outputs_exploit["raw_outputs"][0], feature_gen_outputs_explore["raw_outputs"][0]]
-                feature_gen_outputs["feature_strings"] = [self._llm_manager.extract_json_from_response(assistant_prompt), feature_gen_outputs_exploit["feature_strings"][0], feature_gen_outputs_explore["feature_strings"][0]]
+                feature_gen_outputs_explore = self._llm_manager.feature_gen(user_prompt=feature_gen_prompt + FEATURE_GEN_EXPLORE_FEEDBACK_PROMPT, assistant_prompt=assistant_prompt, num_suggestion=3)
+                # feature_gen_outputs_exploit = self._llm_manager.feature_gen(user_prompt=feature_gen_prompt + FEATURE_GEN_EXPLOIT_FEEDBACK_PROMPT, assistant_prompt=assistant_prompt, num_suggestion=1)
+                feature_gen_outputs["raw_outputs"] = feature_gen_outputs_explore["raw_outputs"]
+                feature_gen_outputs["feature_strings"] = feature_gen_outputs_explore["feature_strings"]
                 feature_strings = feature_gen_outputs["feature_strings"]
                 print(f"\n{'+' * 20} 1 Feature Reused, 2 Features Generated {'+' * 20} \n")
             # else:
@@ -261,13 +262,15 @@ class Tacreka_Preference:
                         FEATURES_JSON=feature_string,
                     )
                 elif feature_gen_prompt != "N" and rw_gen_assistant_prompt is not None:
-                    rw_gen_user_prompt_iter = rw_gen_user_prompt + FEATURE_AS_ONE_SUCCESS_POST_FEEDBACK_PROMPT.format(FEATURES_JSON=feature_string)
+                    rw_gen_user_prompt_iter = rw_gen_user_prompt + FEATURE_AS_ONE_NEW_FEATURES_FEEDBACK_PROMPT.format(FEATURES_JSON=feature_string)
                     # rw_gen_user_prompt = FEATURE_AS_ONE_REWARD_PROMPT.format(
                     #     task_description=self._task_description,
                     #     success_metric_to_win=self._success_metric_to_win,
                     #     get_observations_method_as_string=self._task_manager.get_observations_method_as_string,
                     #     FEATURES_JSON=feature_string,
                     # )
+                else:
+                    rw_gen_user_prompt_iter = rw_gen_user_prompt
                 reward_code = self._llm_manager.single_feature_prompt(user_prompt=rw_gen_user_prompt_iter, assistant_prompt=rw_gen_assistant_prompt, 
                 num_suggestion= 1,
                 )

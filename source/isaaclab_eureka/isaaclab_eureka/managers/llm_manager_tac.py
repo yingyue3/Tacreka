@@ -118,21 +118,21 @@ class LLMManagerTac:
                                         "description": "Intent of the feature. Explain the intent of the feature in one sentence.",
                                         "type": "string",
                                     },
-                                    # "measurable_signals": {
-                                    #     "description": "Signals that can be used to measure the feature.",
-                                    #     "type": "array",
-                                    #     "items": {
-                                    #         "type": "string",
-                                    #     },
-                                    # },
-                                    # "proxy_metric": {
-                                    #     "description": "Proxy metric for the feature. Explain the proxy metric for the feature in one sentence.",
-                                    #     "type": "string",
-                                    # },
-                                    # "weight": {
-                                    #     "description": "Weight of the feature. The weight of the feature in the final reward function.",
-                                    #     "type": "number",
-                                    # },
+                                    "measurable_signals": {
+                                        "description": "Signals that can be used to measure the feature.",
+                                        "type": "array",
+                                        "items": {
+                                            "type": "string",
+                                        },
+                                    },
+                                    "proxy_metric": {
+                                        "description": "Proxy metric for the feature. Explain the proxy metric for the feature in one sentence.",
+                                        "type": "string",
+                                    },
+                                    "weight": {
+                                        "description": "Weight of the feature. The weight of the feature in the final reward function.",
+                                        "type": "number",
+                                    },
                                     "desired_direction": {
                                         "description": "Desired direction of the feature. Explain the desired direction of the feature in one sentence.",
                                         "type": "string",

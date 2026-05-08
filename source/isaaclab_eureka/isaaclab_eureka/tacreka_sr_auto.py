@@ -32,7 +32,8 @@ from isaaclab_eureka.config import (
     FEATURE_AS_ONE_FAILURE_FEEDBACK_PROMPT,
     FEATURE_AS_ONE_SUCCESS_POST_FEEDBACK_PROMPT,
     FEATURE_AS_ONE_SUCCESS_PRE_FEEDBACK_PROMPT,
-    TASK_SUCCESS_PRE_FEEDBACK_PROMPT
+    TASK_SUCCESS_PRE_FEEDBACK_PROMPT,
+    FEATURE_AS_ONE_NEW_FEATURES_FEEDBACK_PROMPT
 )
 from isaaclab_eureka.managers import EurekaTaskManager, LLMManagerTac, RecordManagerQuad, ManipulationTaskManager
 from isaaclab_eureka.utils import load_tensorboard_logs
@@ -200,7 +201,7 @@ class Tacreka_SR:
         # Initial prompts
         feature_gen_prompt = FEATURE_GEN_PROMPT.format(
             task_description=self._task_description,
-            # success_metric_to_win=self._success_metric_to_win,
+            success_metric_to_win=self._success_metric_to_win,
             get_observations_method_as_string=self._task_manager.get_observations_method_as_string,
         )
         # The assistant prompt is used to feed the previous LLM output back into the LLM
@@ -220,12 +221,16 @@ class Tacreka_SR:
                 feature_strings = feature_gen_outputs["feature_strings"]
                 print(f"\n{'+' * 20} {len(feature_strings)} Features Generated {'+' * 20} \n")
             elif feature_gen_prompt != "N":
-                feature_gen_outputs_explore = self._llm_manager.feature_gen(user_prompt=feature_gen_prompt + FEATURE_GEN_EXPLORE_FEEDBACK_PROMPT, assistant_prompt=assistant_prompt, num_suggestion=1)
-                feature_gen_outputs_exploit = self._llm_manager.feature_gen(user_prompt=feature_gen_prompt + FEATURE_GEN_EXPLOIT_FEEDBACK_PROMPT, assistant_prompt=assistant_prompt, num_suggestion=1)
-                feature_gen_outputs["raw_outputs"] = [assistant_prompt, feature_gen_outputs_exploit["raw_outputs"][0], feature_gen_outputs_explore["raw_outputs"][0]]
-                feature_gen_outputs["feature_strings"] = [self._llm_manager.extract_json_from_response(assistant_prompt), feature_gen_outputs_exploit["feature_strings"][0], feature_gen_outputs_explore["feature_strings"][0]]
+                # feature_gen_outputs_explore = self._llm_manager.feature_gen(user_prompt=feature_gen_prompt + FEATURE_GEN_EXPLORE_FEEDBACK_PROMPT, assistant_prompt=assistant_prompt, num_suggestion=1)
+                # feature_gen_outputs_exploit = self._llm_manager.feature_gen(user_prompt=feature_gen_prompt + FEATURE_GEN_EXPLOIT_FEEDBACK_PROMPT, assistant_prompt=assistant_prompt, num_suggestion=1)
+                # feature_gen_outputs["raw_outputs"] = [assistant_prompt, feature_gen_outputs_exploit["raw_outputs"][0], feature_gen_outputs_explore["raw_outputs"][0]]
+                # feature_gen_outputs["feature_strings"] = [self._llm_manager.extract_json_from_response(assistant_prompt), feature_gen_outputs_exploit["feature_strings"][0], feature_gen_outputs_explore["feature_strings"][0]]
+                # feature_strings = feature_gen_outputs["feature_strings"]
+                feature_gen_outputs_explore = self._llm_manager.feature_gen(user_prompt=feature_gen_prompt + FEATURE_GEN_EXPLORE_FEEDBACK_PROMPT, assistant_prompt=assistant_prompt, num_suggestion=3)
+                feature_gen_outputs["raw_outputs"] = feature_gen_outputs_explore["raw_outputs"]
+                feature_gen_outputs["feature_strings"] = feature_gen_outputs_explore["feature_strings"]
                 feature_strings = feature_gen_outputs["feature_strings"]
-                print(f"\n{'+' * 20} 1 Feature Reused, 2 Features Generated {'+' * 20} \n")
+                print(f"\n{'+' * 20} 1 Feature Reused, 1 Features Generated {'+' * 20} \n")
             else:
                 print(f"\n{'+' * 20} All Features Reused {'+' * 20} \n")
             # self._llm_manager.single_feature_reset()
@@ -240,19 +245,9 @@ class Tacreka_SR:
                         FEATURES_JSON=feature_string,
                     )
                 elif feature_gen_prompt != "N" and rw_gen_assistant_prompt is not None:
-                    rw_gen_user_prompt_iter = rw_gen_user_prompt + FEATURE_AS_ONE_SUCCESS_POST_FEEDBACK_PROMPT.format(FEATURES_JSON=feature_string)
-                    # rw_gen_user_prompt = FEATURE_AS_ONE_REWARD_PROMPT.format(
-                    #     task_description=self._task_description,
-                    #     success_metric_to_win=self._success_metric_to_win,
-                    #     get_observations_method_as_string=self._task_manager.get_observations_method_as_string,
-                    #     FEATURES_JSON=feature_string,
-                    # )
-                # if idx == 1000 and rw_gen_assistant_prompt is not None:
-                #     raw_output = rw_gen_assistant_prompt
-                #     reward_string = rw_gen_reward_function
-                #     llm_outputs.append({"reward_strings": [reward_string], "raw_outputs": [raw_output]})
-                #     print("Using previous reward function as the first reward function")
-                # else:
+                    rw_gen_user_prompt_iter = rw_gen_user_prompt + FEATURE_AS_ONE_NEW_FEATURES_FEEDBACK_PROMPT.format(FEATURES_JSON=feature_string)
+                else:
+                    rw_gen_user_prompt_iter = rw_gen_user_prompt
                 reward_code = self._llm_manager.single_feature_prompt(user_prompt=rw_gen_user_prompt_iter, assistant_prompt=rw_gen_assistant_prompt, 
                     num_suggestion= 1, # only two suggestion is needed for the single feature prompt
                     )
@@ -321,6 +316,7 @@ class Tacreka_SR:
                     # print(f"feature_idx: {feature_idx}")
                     results[idx]["reward_components"] = feature_gen_outputs["raw_outputs"][feature_idx]
                     # Check the best performing metric, determined by the minimum distance from the win target
+                    # using the mean success over the final 10% of training.
                     if success_metric_max is not None and (
                         iter_best_success_metric is None
                         or np.abs(success_metric_max - self._success_metric_to_win)
@@ -346,6 +342,13 @@ class Tacreka_SR:
                                 result.get("run_dir", result.get("log_dir"))
                             )
                             best_run_results["learning_curve"] = result.get("learning_curve")
+
+                            # record the best run prompts
+                            best_run_results["user_prompt"] = user_feedback_prompt
+                            best_run_results["assistant_prompt"] = feature_gen_outputs["raw_outputs"][feature_idx]
+                            best_run_results["user_prompt_rw_gen"] = user_feedback_prompt_rw_gen
+                            best_run_results["assistant_prompt_rw_gen"] = gpt_reward_method_strings[idx]["raw_output"]
+                            best_run_results["reward_function"] = gpt_reward_method_strings[idx]["reward_strings"]
                             print("logging best metric to wandb")
                             # Log best metric to wandb
                             if self._use_wandb and self._wandb:
@@ -354,6 +357,7 @@ class Tacreka_SR:
                                     "best/iteration": iter,
                                     "best/run_idx": idx,
                                 }, step=iter)
+                            print("New best run found, the current best run is at iter index: ", idx)
                     best_reward_components = best_run_idx
 
                         
@@ -376,11 +380,11 @@ class Tacreka_SR:
             #     print(f"Task solved with success metric: {best_run_results['success_metric']}")
             #     break
 
-            assistant_prompt = results[best_reward_components]["assistant_prompt"]
-            feature_gen_prompt = results[best_reward_components]["user_prompt"]
-            rw_gen_assistant_prompt = results[best_run_idx]["assistant_prompt_rw_gen"]
-            rw_gen_user_prompt = results[best_run_idx]["user_prompt_rw_gen"]
-            rw_gen_reward_function = results[best_run_idx]["reward_function"]
+            assistant_prompt = best_run_results["assistant_prompt"]
+            feature_gen_prompt = best_run_results["user_prompt"]
+            rw_gen_assistant_prompt = best_run_results["assistant_prompt_rw_gen"]
+            rw_gen_user_prompt = best_run_results["user_prompt_rw_gen"]
+            rw_gen_reward_function = best_run_results["reward_function"]
 
         self._log_final_results(best_run_results)
         # Close the task manager
@@ -393,7 +397,8 @@ class Tacreka_SR:
             log_dir: The directory where the tensorboard logs are stored.
             feedback_subsampling: The subsampling of the metrics' trajectories.
         Returns:
-            A tuple containing the feedback string, the maximum of the success metric, and the correlation between the oracle and GPT rewards.
+            A tuple containing the feedback string, the success metric selection score, and the
+            correlation between the oracle and GPT rewards.
         """
         # We import here because doing this before launching Kit causes GCC_12.0 errors
         import numpy as np
@@ -437,11 +442,11 @@ class Tacreka_SR:
                 metric_min = min(metric_data)
                 metric_max = max(metric_data)
                 metric_mean = sum(metric_data) / len(metric_data)
-                # Best metric is the one closest to the target
-                metric_best = metric_data[np.abs(np.array(metric_data) - self._success_metric_to_win).argmin()]
                 if metric_name == "success_metric":
                     metric_name = "task_score"
-                    success_metric_max = metric_best
+                    tail_count = max(1, int(np.ceil(len(metric_data) * 0.1)))
+                    metric_best = float(np.mean(metric_data[-tail_count:]))
+                    success_metric_max = metric_best 
                 data_string = [f"{data:.2f}" for data in metric_data[::feedback_subsampling]]
                 feedback_string = (
                     f"{metric_name}: {data_string}, Min: {metric_min:.2f}, Max: {metric_max:.2f}, Mean:"
