@@ -77,7 +77,7 @@ class Tacreka_SR:
             wandb_entity: The wandb entity/team name.
             wandb_name: The wandb run name. If None, uses timestamp.
         """
-        self.multi_gpus = False
+        self.multi_gpus = True
 
         # Load the task description and success metric
         if task in TASKS_CFG:
@@ -95,7 +95,10 @@ class Tacreka_SR:
         # num processes is the number of parallel runs for the LLM (reward components number)
         self._num_processes = num_parallel_runs
         # num parallel runs is the number of parallel runs for the task (reward functions number)
-        self._num_parallel_runs = 3
+        if self.multi_gpus:
+            self._num_parallel_runs = 3
+        else:
+            self._num_parallel_runs = 1
 
         # Logging
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -118,7 +121,7 @@ class Tacreka_SR:
                 device=device,
                 env_seed=env_seed,
                 rl_library=rl_library,
-                num_processes=1,
+                num_processes=self._num_parallel_runs,
                 max_training_iterations=max_training_iterations,
                 success_metric_string=success_metric_string,
                 log_namespace="tacreka_sr",
@@ -130,7 +133,7 @@ class Tacreka_SR:
                 device=device,
                 env_seed=env_seed,
                 rl_library=rl_library,
-                num_processes=1,
+                num_processes=self._num_parallel_runs,
                 max_training_iterations=max_training_iterations,
                 success_metric_string=success_metric_string,
                 log_namespace="tacreka_sr",
