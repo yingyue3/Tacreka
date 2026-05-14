@@ -82,8 +82,7 @@ class Tacreka_Ranking:
             wandb_entity: The wandb entity/team name.
             wandb_name: The wandb run name. If None, uses timestamp.
         """
-        self._human_feedback = human_feedback
-        self._num_reward_seeds = 1 if human_feedback else max(1, int(num_reward_seeds))
+        self.multi_gpus = False
 
         # Load the task description and success metric
         if task in TASKS_CFG:
@@ -123,7 +122,7 @@ class Tacreka_Ranking:
             device=device,
             env_seed=env_seed,
             rl_library=rl_library,
-            num_processes=self._num_parallel_runs,
+            num_processes=1,
             max_training_iterations=max_training_iterations,
             success_metric_string=success_metric_string,
             log_namespace="tacreka_sr",
@@ -320,7 +319,12 @@ class Tacreka_Ranking:
             for llm_output in llm_outputs:
                 reward_strings += llm_output["reward_strings"]
             print("+"*10 + " Training Started" + "+"*10)
-            results = self._task_manager.train(reward_strings)
+            if self.multi_gpus:
+                results = self._task_manager.train(reward_strings)
+            else:
+                for reward_string in reward_strings:
+                    results += self._task_manager.train([reward_string])
+            # results = self._task_manager.train(reward_strings)
             # Give TensorBoard time to flush logs before reading them
             import time
             time.sleep(1.0)  # Wait 1 second for TensorBoard to flush
@@ -360,11 +364,12 @@ class Tacreka_Ranking:
                             
                 # Human provide feedback for videos     
                 if not result["success"]:
+                    checkpoint_list.append("NONE")
                     user_feedback_prompt_rw_gen = FEATURE_AS_ONE_FAILURE_FEEDBACK_PROMPT.format(traceback_msg=result["exception"])
                     user_feedback_prompt = "N"
                     print("Failed to generate correct reward function, no video recorded.")
                     if iter_best_success_metric is None:
-                        best_run_checkpoint = "NONE"
+                        # best_run_checkpoint = "NONE"
                         new_run_checkpoint = "NONE"
                     else:
                         new_run_checkpoint = "NONE"
@@ -457,7 +462,9 @@ class Tacreka_Ranking:
                         best_run_feature_components = feature_gen_outputs["feature_strings"][best_run_feature_idx]
                         iter_best_success_metric = success_metric_max
                         best_run_idx = idx
-                        os.rename("./ratings/run_1.mp4", "./ratings/run_2.mp4")
+                        if new_run_checkpoint != "NONE":
+                            os.rename("./ratings/run_1.mp4", "./ratings/run_2.mp4")
+
                    
                 # Add the prompts
                 feature_idx = gpt_reward_method_strings[idx]["feature_idx"]

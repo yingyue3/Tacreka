@@ -18,7 +18,7 @@ from isaaclab_eureka.config import (
     TASK_SUCCESS_PRE_FEEDBACK_PROMPT,
     TASKS_CFG,
 )
-from isaaclab_eureka.managers import EurekaTaskManager, LLMManager
+from isaaclab_eureka.managers import EurekaTaskManager, LLMManager, ManipulationTaskManager
 from isaaclab_eureka.learning_curve_utils import export_learning_curve_artifacts, resolve_checkpoint_path
 from isaaclab_eureka.utils import summarize_tensorboard_candidate
 
@@ -93,18 +93,31 @@ class Eureka:
         )
 
         print("[INFO]: Setting up the Task Manager...")
-        self._task_manager = EurekaTaskManager(
-            task=task,
-            device=device,
-            env_seed=env_seed,
-            rl_library=rl_library,
-            num_processes=self._num_processes,
-            max_training_iterations=max_training_iterations,
-            success_metric_string=success_metric_string,
-            log_namespace="eureka",
-            rl_log_root_dir=self._rl_runs_dir,
-            num_seeds_per_reward=num_reward_seeds,
-        )
+        if task == "Isaac-Lift-Cube-Franka-v0":
+            self._task_manager = ManipulationTaskManager(
+                task=task,
+                device=device,
+                env_seed=env_seed,
+                rl_library=rl_library,
+                # num_processes=self._num_processes,
+                num_processes=1,
+                max_training_iterations=max_training_iterations,
+                # success_metric_string=success_metric_string,
+                log_namespace="tacreka_sr",
+                rl_log_root_dir=self._rl_runs_dir,
+            )
+        else:
+            self._task_manager = EurekaTaskManager(
+                task=task,
+                device=device,
+                env_seed=env_seed,
+                rl_library=rl_library,
+                num_processes=1,
+                max_training_iterations=max_training_iterations,
+                success_metric_string=success_metric_string,
+                log_namespace="tacreka_sr",
+                rl_log_root_dir=self._rl_runs_dir,
+            )
 
         # We import here because doing this before launching Kit causes GLIBCXX errors
         from torch.utils.tensorboard import SummaryWriter as TensorboardSummaryWriter
@@ -169,8 +182,10 @@ class Eureka:
 
         # The best run across all iterations
         best_run_results = {"success_metric": None}
-
+        
         for iter in range(max_eureka_iterations):
+            results = []
+
             print(f"\n{'#' * 20} Running Eureka Iteration {iter} {'#' * 20} \n")
             # Generate the GPT reward methods
             llm_outputs = self._llm_manager.prompt(user_prompt=user_prompt, assistant_prompt=assistant_prompt)
@@ -181,7 +196,8 @@ class Eureka:
                 if self._use_wandb and self._wandb:
                     self._wandb.log({f"Run_{idx}/raw_llm_output": llm_outputs["raw_outputs"][idx]}, step=iter)
             # Train the RL agent
-            results = self._task_manager.train(gpt_reward_method_strings)
+                results += self._task_manager.train([gpt_reward_method_string])
+            # results = self._task_manager.train(gpt_reward_method_strings)
             # Give TensorBoard time to flush logs before reading them
             import time
             time.sleep(1.0)  # Wait 1 second for TensorBoard to flush

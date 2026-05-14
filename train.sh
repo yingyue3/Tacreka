@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --account=rrg-bengioy-ad_gpu
+#SBATCH --account=def-mtaylor3
 #SBATCH --time=4:00:00
 #SBATCH --mem=20G
 #SBATCH --cpus-per-task=1

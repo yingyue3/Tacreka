@@ -23,6 +23,9 @@ Some helpful tips for writing the reward function code:
     (2) If you choose to transform a reward component, then you must also introduce a temperature parameter inside the transformation function; this parameter must be a named variable in the reward function and it must not be an input variable. Each transformed reward component should have its own temperature variable
     (3) Make sure the type of each input variable is correctly specified; a float input variable should not be specified as torch.Tensor
     (4) Most importantly, the reward code's input variables must contain only attributes of the provided environment class definition (namely, variables that have prefix self.). Under no circumstance can you introduce new input variables.
+    (5) Implement minimize/maximize directions deliberately. Error, distance, velocity, effort, and instability signals should usually be transformed so the reward is high when the raw signal is low.
+    (6) If the desired task score is an error target such as 0.0, reward closeness to the target. Do not reward larger raw task_score values.
+    (7) Keep every component bounded and keep individual_rewards_dict keys exactly matched to the feature names.
 """
 
 FEATURE_GEN_FORMATTING_PROMPT = """
@@ -54,6 +57,18 @@ Some helpful tips for selecting the measurable signals:
 (4) Most importantly, the reward code's input variables must contain only attributes of the provided
         environment class definition (namely, variables with prefix self.). Do NOT introduce new input variables
         or reference attributes not explicitly shown in the observation method.
+(5) Include one primary task-progress feature that is directly tied to the task objective or desired task score.
+        Auxiliary features such as smoothness, action economy, uprightness, or survival should support this
+        primary feature, not replace it.
+(6) Interpret the desired task score correctly. Some IsaacLab task scores are distances/errors where LOWER is
+        better and the target is 0.0. In those cases, features should reward reducing the error, not increasing
+        the raw task_score value.
+(7) For each feature, choose desired_direction for the RAW proxy metric, not for the transformed reward.
+        Example: distance_to_target has desired_direction="minimize"; the later reward component should become
+        large when this distance is small.
+(8) Avoid proxy metrics that are sign-ambiguous or nearly constant, such as torch.norm(projected_gravity_b) for
+        attitude stability. Prefer directional components, signed projections, distances to targets, and bounded
+        error terms that clearly distinguish good and bad states.
 Output format: valid JSON ONLY. Do not include markdown, code fences, comments, or extra text.
 """
 
@@ -79,8 +94,11 @@ Some helpful tips for analyzing the policy feedback:
         are not properly bounded. Apply torch.tanh or torch.clamp to keep each component in [-1, 1] or [0, 1].
     (5) If the task_score improves initially but then degrades (reward-objective misalignment), strengthen
         the primary_success component weight and/or remove auxiliary terms that pull in a conflicting direction.
-    (6) Do NOT reference attributes that are not explicitly provided in the environment's observation method.
-Analyze each existing reward component in the suggested manner above first, and then write a brand new reward feature decomposition that has at least two brand new feature.
+    (6) If eureka_total_rewards increases while task_score moves away from the desired task score, the reward is
+        likely anti-aligned. Flip the direction of the offending feature, replace the proxy metric, or reduce its
+        weight sharply.
+    (7) Do NOT reference attributes that are not explicitly provided in the environment's observation method.
+Analyze each existing reward component in the suggested manner above first, and then write a brand new reward feature decomposition that has at least two brand new features.
 """ + FEATURE_GEN_FORMATTING_PROMPT
 
 FEATURE_GEN_EXPLOIT_FEEDBACK_PROMPT = """
@@ -95,6 +113,10 @@ Some helpful tips for analyzing the policy feedback:
     (3) If some reward feature magnitudes are significantly larger than others, re-scale to a comparable range.
     (4) If the total reward grew more than 5x during training, the features are not properly bounded;
         add normalization constraints (e.g., torch.tanh or torch.clamp) in the implementation.
+    (5) If reward increases while the task_score moves away from the desired task score, treat the reward as
+        misaligned. Preserve only components that clearly move the policy toward the desired task score.
+    (6) For tasks where the desired task score is an error target such as 0.0, do not reward large task_score
+        values. Reward closeness to the target instead.
 Please analyze each existing reward feature in the suggested manner above first, and then write the reward feature decomposition.
 """ + FEATURE_GEN_FORMATTING_PROMPT
 
@@ -141,6 +163,16 @@ Some helpful tips for writing the reward function code:
     (4) Most importantly, the reward code's input variables must contain only attributes of the provided
         environment class definition (namely, variables with prefix self.). Do NOT introduce new input variables
         or reference attributes not explicitly shown in the observation method.
+    (5) Implement the sign convention deliberately:
+        - For desired_direction="minimize", compute a non-negative error/cost signal first, then convert it to a
+          reward that is HIGH when the signal is LOW, e.g. torch.exp(-temperature * error) or
+          1.0 - torch.tanh(scale * error).
+        - For desired_direction="maximize", compute a progress/success signal and bound it with torch.tanh,
+          torch.clamp, or a normalized affine transform when a safe range is known.
+        - Do not add raw penalties with accidental positive sign. A term named "error", "distance", "velocity",
+          "effort", or "instability" should usually reduce reward unless it has been transformed first.
+    (6) If the desired task score is 0.0 or another error-like target, higher task_score is worse. The final
+        reward should increase as the policy moves closer to that target, not as the raw task_score increases.
 
 Hard requirements:
 1) Implement one reward component per feature: r_(feature_name) as a Tensor of shape (num_envs,).
@@ -255,6 +287,10 @@ refined feature set exactly:
 - Assign fresh named weights for the refined components based on the provided weights in the FEATURES_JSON.
 - If a useful code pattern from the previous reward conflicts with the refined features, discard that
   pattern and follow the refined features.
+- Keep the final reward monotonic with task success. A policy state closer to the desired task score should
+  receive higher reward than a state farther from it, even if auxiliary smoothness or energy terms are worse.
+- Do not let auxiliary terms such as smoothness, low velocity, low action, uprightness, or survival dominate
+  the primary task-progress feature.
 
 Before writing the final code, internally check that increasing the total reward should improve the desired
 task score rather than merely increasing motion, survival time, or another proxy.
@@ -303,6 +339,11 @@ RULE 5 — VALIDATE signal quality.
   (a) Its measurable_signals exist in the environment observation method.
   (b) Its proxy_metric produces a signal that varies meaningfully between good and bad agent states.
   (c) It does NOT use torch.norm(projected_gravity_b) as an uprightness proxy (use projected_gravity_b[:, 2] instead).
+  (d) Its desired_direction describes the raw proxy metric correctly. Error, distance, speed, effort, tilt,
+      and instability signals are usually "minimize"; direct progress, height reached, target contact, or
+      success indicators are usually "maximize".
+  (e) It cannot become high while the task_score moves away from the desired value unless it is explicitly a
+      low-weight safety or regularization term.
   If a retained feature fails validation, fix the proxy_metric or replace the feature with a corrected one.
 """ + FEATURE_GEN_FORMATTING_PROMPT
 

@@ -36,6 +36,8 @@ class LLMManagerTac:
         self._gpt_model = gpt_model
         self._num_suggestions = 1
         self._temperature = temperature
+        self._reward_system_prompt = system_prompt
+        self._feature_system_prompt = feature_prompt
         self._prompts = [{"role": "system", "content": system_prompt}]
         self._feature_prompts = [{"role": "system", "content": feature_prompt}]
         self._single_feature_reward_generation_prompts = [{"role": "system", "content": system_prompt}]
@@ -268,4 +270,98 @@ class LLMManagerTac:
         return {"reward_strings": reward_strings, "raw_outputs": raw_outputs}
     
     def single_feature_reset(self):
-        self._single_feature_reward_generation_prompts = []
+        """Reset the single-feature reward generation conversation back to just the system prompt."""
+        self._single_feature_reward_generation_prompts = [
+            {"role": "system", "content": self._reward_system_prompt}
+        ]
+
+    def refine_single_feature(
+        self,
+        user_prompt: str,
+        system_prompt: str,
+        num_suggestion: int = 1,
+    ) -> dict:
+        """Refine ONE feature in a locked feature set via a stateless LLM call.
+
+        Each call is independent (no conversation history is retained) because the
+        per-component refinement context is fully provided in `user_prompt`. The
+        response is forced to a strict JSON schema describing a single refined feature.
+
+        Args:
+            user_prompt: The user prompt describing the feature being refined and its
+                observed component-level + task-level feedback.
+            system_prompt: System prompt describing the refinement role/constraints.
+            num_suggestion: Number of independent refinements to sample from the LLM.
+
+        Returns:
+            A dict with:
+              - "refined_features": list of parsed feature dicts (one per suggestion)
+              - "raw_outputs": list of raw string responses from the LLM
+        """
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "single_refined_feature",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "feature_name",
+                        "intent",
+                        "desired_direction",
+                        "typical_failure_mode",
+                    ],
+                    "properties": {
+                        "feature_name": {
+                            "description": "MUST match the locked feature_name being refined.",
+                            "type": "string",
+                        },
+                        "intent": {
+                            "description": "Refined one-sentence description of what this feature encourages.",
+                            "type": "string",
+                        },
+                        "desired_direction": {
+                            "description": "Refined desired direction (maximize or minimize).",
+                            "type": "string",
+                        },
+                        "typical_failure_mode": {
+                            "description": "Refined typical failure mode for this feature.",
+                            "type": "string",
+                        },
+                    },
+                },
+            },
+        }
+
+        try:
+            responses = create_chat_completion(
+                self._client,
+                model=self._gpt_model,
+                messages=messages,
+                temperature=self._temperature,
+                n=num_suggestion,
+                response_format=response_format,
+                timeout_seconds=self._request_timeout_seconds,
+                max_request_retries=self._max_request_retries,
+                retry_backoff_seconds=self._retry_backoff_seconds,
+                request_name="LLMManagerTac.refine_single_feature",
+            )
+        except Exception as e:
+            raise RuntimeError("An error occurred while prompting the LLM for feature refinement") from e
+
+        raw_outputs = [response.message.content for response in responses.choices]
+        refined_features = []
+        for raw_output in raw_outputs:
+            try:
+                refined_features.append(json.loads(raw_output))
+            except Exception as e:
+                print(f"[WARNING] Failed to parse refined-feature JSON: {e}. Raw output: {raw_output}")
+                refined_features.append(None)
+
+        return {"refined_features": refined_features, "raw_outputs": raw_outputs}

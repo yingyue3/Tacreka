@@ -5,3 +5,5 @@ recordings/
 ratings/
 saved_files/
 *.out 
+local_logs/
+outputs/
