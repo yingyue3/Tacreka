@@ -36,7 +36,7 @@ from isaaclab_eureka.config import (
     FEATURE_AS_ONE_NEW_FEATURES_FEEDBACK_PROMPT
 )
 from isaaclab_eureka.managers import EurekaTaskManager, LLMManagerTac, RecordManagerQuad, ManipulationTaskManager
-from isaaclab_eureka.utils import load_tensorboard_logs
+from isaaclab_eureka.utils import summarize_tensorboard_candidate
 
 
 class Tacreka_SR:
@@ -140,6 +140,7 @@ class Tacreka_SR:
                 success_metric_string=success_metric_string,
                 log_namespace="tacreka_sr",
                 rl_log_root_dir=self._rl_runs_dir,
+                num_seeds_per_reward=num_reward_seeds,
             )
 
         print("[INFO]: Setting up the Record Manager...")
@@ -351,9 +352,8 @@ class Tacreka_SR:
                     feature_idx = gpt_reward_method_strings[idx]["feature_idx"]
                     # print(f"feature_idx: {feature_idx}")
                     results[idx]["reward_components"] = feature_gen_outputs["raw_outputs"][feature_idx]
-                    # Check the best performing metric, determined by the minimum distance from the win target
-                    # using the mean success over the final 10% of training.
-                    if success_metric_max is not None and (
+                    # Check the best performing candidate by minimum distance from the target seed-aggregate score.
+                    if success_metric_mean is not None and (
                         iter_best_success_metric is None
                         or np.abs(success_metric_mean - self._success_metric_to_win)
                         < np.abs(iter_best_success_metric - self._success_metric_to_win)
@@ -387,6 +387,9 @@ class Tacreka_SR:
                                 or resolve_checkpoint_path(results[idx]["selected_seed_run_dir"])
                             )
                             best_run_results["learning_curve"] = result.get("learning_curve")
+                            best_run_results["seed_summaries"] = evaluation_summary["seed_summaries"]
+                            best_run_results["selected_seed"] = results[idx]["selected_seed"]
+                            best_run_results["representative_seed"] = results[idx]["representative_seed"]
 
                             # record the best run prompts
                             best_run_results["user_prompt"] = user_feedback_prompt
@@ -435,75 +438,13 @@ class Tacreka_SR:
         # Close the task manager
         self._task_manager.close()
 
-    def _get_eureka_task_feedback(self, log_dir: str, feedback_subsampling: int) -> tuple[str, float, float]:
-        """Get the feedback for the Eureka task.
-
-        Args:
-            log_dir: The directory where the tensorboard logs are stored.
-            feedback_subsampling: The subsampling of the metrics' trajectories.
-        Returns:
-            A tuple containing the feedback string, the success metric selection score, and the
-            correlation between the oracle and GPT rewards.
-        """
-        # We import here because doing this before launching Kit causes GCC_12.0 errors
-        import numpy as np
-
-        data = load_tensorboard_logs(log_dir)
-
-        # Compute correlation between the oracle and GPT rewards
-        eureka_rewards_data = next((data[key] for key in data if key.endswith("Eureka/eureka_total_rewards")), None)
-        oracle_rewards_data = next((data[key] for key in data if key.endswith("Eureka/oracle_total_rewards")), None)
-        
-        # Handle case where rewards data is missing
-        if eureka_rewards_data is None or oracle_rewards_data is None:
-            print(f"[WARNING] Missing reward data in TensorBoard logs. Available keys: {list(data.keys())}")
-            print(f"[WARNING] Eureka rewards found: {eureka_rewards_data is not None}, Oracle rewards found: {oracle_rewards_data is not None}")
-            # Return default correlation of 0.0 if data is missing
-            rewards_correlation = 0.0
-        else:
-            eureka_rewards = np.array(eureka_rewards_data)
-            oracle_rewards = np.array(oracle_rewards_data)
-            
-            # Check if arrays have valid shape
-            if eureka_rewards.ndim == 0 or oracle_rewards.ndim == 0:
-                print(f"[WARNING] Reward arrays have invalid shape. Eureka: {eureka_rewards.shape}, Oracle: {oracle_rewards.shape}")
-                rewards_correlation = 0.0
-            elif len(eureka_rewards) == 0 or len(oracle_rewards) == 0:
-                print(f"[WARNING] Reward arrays are empty. Eureka: {len(eureka_rewards)}, Oracle: {len(oracle_rewards)}")
-                rewards_correlation = 0.0
-            else:
-                # Sometimes, the tensorboard logging is not complete, we take the minimum length between the two buffers
-                min_length = min(len(eureka_rewards), len(oracle_rewards))
-                rewards_correlation = np.corrcoef(eureka_rewards[:min_length], oracle_rewards[:min_length])[0, 1]
-
-        success_metric_max = None
-        # Make a summary of each plot in the tensorboard logs
-        total_feed_back_string = ""
-        for metric_name, metric_data in data.items():
-            if "Eureka/" in metric_name:
-                # Remove the first two data points as they are usually outliers
-                metric_data = metric_data[2:]
-                metric_name = metric_name.split("Eureka/", 1)[-1]
-                metric_min = min(metric_data)
-                metric_max = max(metric_data)
-                metric_mean = sum(metric_data) / len(metric_data)
-                if metric_name == "success_metric":
-                    metric_name = "task_score"
-                    tail_count = max(1, int(np.ceil(len(metric_data) * 0.1)))
-                    metric_best = float(np.mean(metric_data[-tail_count:]))
-                    success_metric_max = metric_best 
-                data_string = [f"{data:.2f}" for data in metric_data[::feedback_subsampling]]
-                feedback_string = (
-                    f"{metric_name}: {data_string}, Min: {metric_min:.2f}, Max: {metric_max:.2f}, Mean:"
-                    f" {metric_mean:.2f} \n"
-                )
-                if "Eureka/success_metric" in data and metric_name == "Eureka/oracle_total_rewards":
-                    # If success metric is available, we do not provide the oracle feedback
-                    feedback_string = ""
-                total_feed_back_string += feedback_string
-
-        total_feed_back_string += f"\nThe desired task_score to win is: {self._success_metric_to_win:.2f}\n"
-        return total_feed_back_string, success_metric_max, rewards_correlation
+    def _get_eureka_task_feedback(self, log_dir: str | list[str], feedback_subsampling: int) -> dict:
+        """Aggregate one candidate across one or more seed log directories."""
+        return summarize_tensorboard_candidate(
+            log_dirs=log_dir,
+            feedback_subsampling=feedback_subsampling,
+            success_metric_target=self._success_metric_to_win,
+        )
 
     def _log_iteration_results(self, iter: int, results: list):
         """Log the results of the iteration."""

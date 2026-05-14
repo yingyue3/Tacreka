@@ -5,11 +5,8 @@
 import datetime
 import glob
 import json
-import math
 import os
 import random
-import subprocess
-import sys
 from functools import partial
 from typing import Dict, List, Optional, Tuple
 
@@ -19,7 +16,8 @@ from isaaclab_eureka.config import (
     DIRECT_WORKFLOW_TASK_PROMPT,
     TASKS_CFG,
 )
-from isaaclab_eureka.managers import EurekaTaskManager, LLMManager
+from isaaclab_eureka.managers import EurekaTaskManager, LLMManager, RecordManagerQuad
+from isaaclab_eureka.managers.feedback_manager import HumanFeedbackManager, RewardInfo
 from isaaclab_eureka.learning_curve_utils import export_learning_curve_artifacts
 from isaaclab_eureka.revolve_full.database import RevolveDatabase
 from isaaclab_eureka.revolve_full import prompts as revolve_prompts
@@ -154,6 +152,16 @@ class RevolveFull:
             rl_log_root_dir=self._rl_runs_dir,
         )
 
+        if self._use_hf:
+            self._record_manager = RecordManagerQuad(
+                task=task,
+                num_envs=1,
+                device=device,
+                max_frames=900,
+                num_episodes=1,
+            )
+            self._feedback_manager = HumanFeedbackManager(port=8889)
+
         self._use_wandb = use_wandb
         self._wandb = None
         if use_wandb:
@@ -222,6 +230,7 @@ class RevolveFull:
             counter_ids: List[int] = []
             metrics_dicts: List[Dict] = []
             candidate_ids: List[str] = []
+            results_by_candidate: List[Dict] = []
 
             for counter_id in range(self._individuals_per_generation):
                 if generation_id == 0:
@@ -271,6 +280,7 @@ class RevolveFull:
                 fitness_scores.append(fitness)
                 counter_ids.append(counter_id)
                 candidate_ids.append(f"gen{generation_id}_ctr{counter_id}_isl{island_id}")
+                results_by_candidate.append(result)
 
                 if best_overall["fitness"] is None or (
                     success_metric_max is not None
@@ -306,25 +316,11 @@ class RevolveFull:
                 print("[WARN] No valid reward functions generated; skipping generation update.")
                 continue
 
-            # Human feedback: write manifest and, if responses exist, override fitness scores with Elo ratings.
+            # Human feedback: record videos for successful candidates, then rank via pairwise comparisons.
             if self._use_hf:
-                manifest_path = os.path.join(self._hf_dir, f"generation_{generation_id}", "candidates_manifest.csv")
-                os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
-                with open(manifest_path, "w") as mf:
-                    mf.write("candidate_id,generation,counter,island,log_dir\n")
-                    for cid, gen_id, ctr_id, isl_id in zip(
-                        candidate_ids,
-                        [generation_id] * len(counter_ids),
-                        counter_ids,
-                        island_ids,
-                    ):
-                        mf.write(f"{cid},{gen_id},{ctr_id},{isl_id},{self._log_dir}\n")
-                hf_scores = compute_hf_scores(self._hf_dir, generation_id)
-                if hf_scores:
-                    remapped_scores = []
-                    for cid, default_score in zip(candidate_ids, fitness_scores):
-                        remapped_scores.append(hf_scores.get(cid, default_score))
-                    fitness_scores = remapped_scores
+                fitness_scores = self._collect_human_fitness(
+                    generation_id, candidate_ids, fitness_scores, results_by_candidate
+                )
 
             if generation_id > 0:
                 database.add_individuals_to_islands(
@@ -347,6 +343,95 @@ class RevolveFull:
 
         self._task_manager.close()
         self._log_final_results(best_overall)
+
+    def _collect_human_fitness(
+        self,
+        generation_id: int,
+        candidate_ids: List[str],
+        fitness_scores: List[float],
+        results_by_candidate: List[Dict],
+    ) -> List[float]:
+        """Record videos for each successful candidate, run pairwise comparisons via browser UI,
+        write results as a responses CSV, then compute Elo scores."""
+        video_dir = os.path.join(self._hf_dir, f"generation_{generation_id}")
+        os.makedirs(video_dir, exist_ok=True)
+
+        # Record a video for each successful candidate; failed ones get None.
+        video_paths: List[Optional[str]] = []
+        for cid, result in zip(candidate_ids, results_by_candidate):
+            if result["success"]:
+                checkpoint = result.get("checkpoint_file") or self._resolve_checkpoint_path(
+                    result.get("run_dir", result.get("log_dir"))
+                )
+                if checkpoint:
+                    video_path = os.path.join(video_dir, f"{cid}.mp4")
+                    self._record_manager.record(checkpoint=checkpoint, output_file=video_path)
+                    video_paths.append(video_path)
+                else:
+                    video_paths.append(None)
+            else:
+                video_paths.append(None)
+
+        # Only compare candidates that have a video.
+        valid_indices = [i for i, vp in enumerate(video_paths) if vp is not None]
+        if len(valid_indices) < 2:
+            print("[HF] Fewer than 2 successful videos; skipping human comparison.")
+            return fitness_scores
+
+        # Run all pairwise comparisons through the browser UI and collect rows for the CSV.
+        csv_rows: List[Dict] = []
+        for a in range(len(valid_indices)):
+            for b in range(a + 1, len(valid_indices)):
+                idx_a = valid_indices[a]
+                idx_b = valid_indices[b]
+                label_a = candidate_ids[idx_a]
+                label_b = candidate_ids[idx_b]
+                print(f"\n[HF] Comparing {label_a} vs {label_b}")
+                feedback_result = self._feedback_manager.select_video(
+                    video_paths=[video_paths[idx_a], video_paths[idx_b]],
+                    descriptions=[label_a, label_b],
+                    task_description=self._task_cfg.get("description"),
+                    reward_infos=[RewardInfo(name=label_a), RewardInfo(name=label_b)],
+                    allow_text_feedback=False,
+                    allow_rating=False,
+                )
+                # Selected=1.0 means Video 1 won, 2.0 means Video 2 won (Elo convention).
+                selected = 1.0 if feedback_result.selected_index == 0 else 2.0
+                csv_rows.append({
+                    "Video 1": label_a,
+                    "Video 2": label_b,
+                    "Selected": selected,
+                    "Positive Feedback 1": "",
+                    "Negative Feedback 1": "",
+                    "Positive Feedback 2": "",
+                    "Negative Feedback 2": "",
+                })
+
+        # Write responses CSV so compute_hf_scores can accumulate across generations.
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        csv_path = os.path.join(video_dir, f"responses_{timestamp}.csv")
+        import csv as _csv
+        with open(csv_path, "w", newline="") as f:
+            writer = _csv.DictWriter(f, fieldnames=[
+                "Video 1", "Video 2", "Selected",
+                "Positive Feedback 1", "Negative Feedback 1",
+                "Positive Feedback 2", "Negative Feedback 2",
+            ])
+            writer.writeheader()
+            writer.writerows(csv_rows)
+        print(f"[HF] Saved {len(csv_rows)} comparisons to {csv_path}")
+
+        # Compute Elo scores (accumulates all generations up to and including this one).
+        hf_scores = compute_hf_scores(self._hf_dir, generation_id)
+        if not hf_scores:
+            return fitness_scores
+
+        new_fitness = list(fitness_scores)
+        for i, cid in enumerate(candidate_ids):
+            if cid in hf_scores:
+                new_fitness[i] = hf_scores[cid]
+        print(f"[HF] Elo scores applied: { {cid: hf_scores[cid] for cid in candidate_ids if cid in hf_scores} }")
+        return new_fitness
 
     def _to_evolution_fitness(self, success_metric: float) -> float:
         """Map task score to island fitness where larger is always better."""

@@ -112,11 +112,8 @@ def summarize_tensorboard_candidate(
             if metric_name.endswith("Eureka/success_metric"):
                 has_success_metric = True
                 if trimmed_metric:
-                    closest_idx = min(
-                        range(len(trimmed_metric)),
-                        key=lambda idx: abs(trimmed_metric[idx] - success_metric_target),
-                    )
-                    success_metric_value = float(trimmed_metric[closest_idx])
+                    tail_count = max(1, math.ceil(len(trimmed_metric) * 0.1))
+                    success_metric_value = float(sum(trimmed_metric[-tail_count:]) / tail_count)
 
         seed_summaries.append(
             {

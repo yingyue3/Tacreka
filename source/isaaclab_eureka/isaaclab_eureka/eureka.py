@@ -117,6 +117,7 @@ class Eureka:
                 success_metric_string=success_metric_string,
                 log_namespace="tacreka_sr",
                 rl_log_root_dir=self._rl_runs_dir,
+                num_seeds_per_reward=num_reward_seeds,
             )
 
         # We import here because doing this before launching Kit causes GLIBCXX errors

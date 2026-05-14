@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-#SBATCH --account=def-mtaylor3
-#SBATCH --time=4:00:00
+#SBATCH --account=rrg-bengioy-ad_gpu
+#SBATCH --time=12:00:00
 #SBATCH --mem=20G
 #SBATCH --cpus-per-task=1
 #SBATCH --gpus=h100:1
@@ -49,7 +49,7 @@ RL_LIBRARY="${RL_LIBRARY:-rsl_rl}"
 MAX_TRAINING_ITERATIONS="${MAX_TRAINING_ITERATIONS:-100}"
 MAX_EUREKA_ITERATIONS="${MAX_EUREKA_ITERATIONS:-10}"
 NUM_REWARD_SEEDS="${NUM_REWARD_SEEDS:-5}"
-ENV_SEED="${ENV_SEED:-42}"
+ENV_SEED="${ENV_SEED:-1}"
 NUM_PARALLEL_RUNS="${NUM_PARALLEL_RUNS:-3}"
 EXTRA_ARGS=("${@:3}")
 
