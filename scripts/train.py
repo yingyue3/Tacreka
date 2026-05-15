@@ -11,14 +11,14 @@ from isaaclab_eureka import Revolve, RevolveFull
 from isaaclab_eureka.eureka import Eureka
 from isaaclab_eureka.eureka_human import EurekaHuman
 from isaaclab_eureka.tacreka_ranking import Tacreka_Ranking
-# from isaaclab_eureka.tacreka_preference import Tacreka_Preference
+from isaaclab_eureka.tacreka_preference import Tacreka_Preference
 from isaaclab_eureka.tacreka_sr_auto import Tacreka_SR
 # from isaaclab_eureka.tacreka_sr_traj import Tacreka_SR_Traj
 
 
 def main(args_cli):
     if args_cli.baseline == "tacreka_sr":
-        tacreka = Tacreka_SR(
+        tacreka = Tacreka_Preference(
             task=args_cli.task,
             rl_library=args_cli.rl_library,
             num_parallel_runs=args_cli.num_parallel_runs,
@@ -106,7 +106,7 @@ def main(args_cli):
         )
         revolve_full.run()
     else:
-        eureka = Eureka(
+        eureka = EurekaHuman(
             task=args_cli.task,
             rl_library=args_cli.rl_library,
             num_parallel_runs=args_cli.num_parallel_runs,

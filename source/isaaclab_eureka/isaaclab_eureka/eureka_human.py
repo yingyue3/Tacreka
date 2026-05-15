@@ -67,6 +67,7 @@ class EurekaHuman:
         """
 
         # Load the task description and success metric
+        self._multi_gpus = False
         if task in TASKS_CFG:
             task_description = TASKS_CFG[task]["description"]
             success_metric_string = TASKS_CFG[task].get("success_metric")
@@ -87,6 +88,18 @@ class EurekaHuman:
         self._rl_runs_dir = os.path.join(self._log_dir, "rl_runs")
         os.makedirs(self._log_dir)
 
+        # Persistent trajectory store + human-preference dataset for post-hoc TAC.
+        # The video files under ./ratings/ are overwritten between iterations, so we
+        # save each rollout's per-step trajectory to a unique path under the log dir
+        # and keep a video-path -> trajectory-path map that we update in lockstep
+        # with the existing rename pattern.
+        self._traj_dir = os.path.join(self._log_dir, "trajectories")
+        os.makedirs(self._traj_dir, exist_ok=True)
+        self._human_pref_jsonl_path = os.path.join(self._log_dir, "human_preferences.jsonl")
+        self._video_to_traj: dict[str, str] = {}
+        self._traj_metadata: dict[str, dict] = {}
+        self._traj_seq_counter: int = 0
+
         print("[INFO]: Setting up the LLM Manager...")
         self._llm_manager = LLMManager(
             gpt_model=gpt_model,
@@ -96,6 +109,8 @@ class EurekaHuman:
         )
 
         print("[INFO]: Setting up the Task Manager...")
+        if not self._multi_gpus:
+            self._num_processes = 1
         if task == "Isaac-Lift-Cube-Franka-v0":
             self._task_manager = ManipulationTaskManager(
                 task=task,
@@ -128,6 +143,8 @@ class EurekaHuman:
             device=device,
             max_frames=900,
             num_episodes=1,
+            save_trajectory = True,
+            trajectory_gamma= 1.0,
         )
 
         print("[INFO]: Setting up the Feedback Manager...")
@@ -188,7 +205,7 @@ class EurekaHuman:
         # Initial prompts
         user_prompt = DIRECT_WORKFLOW_TASK_PROMPT.format(
             task_description=self._task_description,
-            success_metric_to_win=self._success_metric_to_win,
+            # success_metric_to_win=self._success_metric_to_win,
             get_observations_method_as_string=self._task_manager.get_observations_method_as_string,
         )
         # The assistant prompt is used to feed the previous LLM output back into the LLM
@@ -254,7 +271,17 @@ class EurekaHuman:
                         new_run_checkpoint = result.get("checkpoint_file") or resolve_checkpoint_path(
                             result.get("run_dir", result["log_dir"])
                         )
-                        self._record_manager.record(checkpoint=new_run_checkpoint, output_file="./ratings/run_1.mp4")
+                        # self._record_manager.record(checkpoint=new_run_checkpoint, output_file="./ratings/run_1.mp4")
+                        self._record_and_track(
+                            video_output="./ratings/run_1.mp4",
+                            checkpoint=new_run_checkpoint,
+                            iter_idx=iter,
+                            role="run_1",
+                            candidate_source=gpt_reward_method_strings[idx],
+                            feature_components=None,
+                            feature_idx=None,
+                            result_idx=idx,
+                        )
                         checkpoint_list.append("./ratings/run_1.mp4")
                         if iter_best_success_metric is None:
                             iter_best_success_metric = success_metric_max
@@ -273,6 +300,13 @@ class EurekaHuman:
                                 reward_infos=[reward_info_v1, reward_info_v2],
                                 allow_text_feedback=False,
                                 allow_rating=False,)
+                            self._log_human_preference(
+                                iter_idx=iter,
+                                context="iteration_internal",
+                                video_paths=checkpoint_list,
+                                winner_index=feedback_result.selected_index,
+                                reward_infos=[reward_info_v1, reward_info_v2],
+                            )
                             if feedback_result.selected_index == 0:                        # iter_best_success_metric = success_metric_max
                                 best_run_idx = idx
                                 os.rename("./ratings/run_1.mp4", "./ratings/run_2.mp4")
@@ -306,13 +340,13 @@ class EurekaHuman:
 
             self._log_iteration_results(iter, results)
 
-            if (
-                best_run_results["success_metric"] is not None
-                and np.abs(best_run_results["success_metric"] - self._success_metric_to_win)
-                < self._success_metric_tolerance
-            ):
-                print(f"Task solved with success metric: {best_run_results['success_metric']}")
-                break
+            # if (
+            #     best_run_results["success_metric"] is not None
+            #     and np.abs(best_run_results["success_metric"] - self._success_metric_to_win)
+            #     < self._success_metric_tolerance
+            # ):
+            #     print(f"Task solved with success metric: {best_run_results['success_metric']}")
+            #     break
 
             assistant_prompt = results[best_run_idx]["assistant_prompt"]
             user_prompt = results[best_run_idx]["user_prompt"]
@@ -477,3 +511,140 @@ class EurekaHuman:
         # Finish wandb run
         if self._use_wandb and self._wandb:
             self._wandb.finish()
+            
+    # ------------------------------------------------------------------
+    # Trajectory + human-preference logging (post-hoc TAC support)
+    # ------------------------------------------------------------------
+
+    def _record_and_track(
+        self,
+        *,
+        video_output: str,
+        checkpoint: str,
+        iter_idx: int,
+        role: str,
+        candidate_source: str | None = None,
+        feature_components=None,
+        feature_idx: int | None = None,
+        result_idx: int | None = None,
+    ) -> str | None:
+        """Run ``RecordManagerQuad.record`` while persisting the trajectory to a
+        stable per-iteration path and registering it in the video->trajectory map.
+
+        Returns the absolute trajectory ``.pt`` path, or ``None`` if recording or
+        trajectory saving failed.
+        """
+        self._traj_seq_counter += 1
+        traj_filename = f"iter{iter_idx:04d}_{role}_seq{self._traj_seq_counter:04d}.pt"
+        traj_path = os.path.join(self._traj_dir, traj_filename)
+        try:
+            saved = self._record_manager.record(
+                checkpoint=checkpoint,
+                output_file=video_output,
+                trajectory_output_file=traj_path,
+            )
+        except TypeError:
+            # Older record() signatures without trajectory_output_file: fall back so we
+            # don't break runs that use a different recorder (e.g. VideoIsaac).
+            self._record_manager.record(checkpoint=checkpoint, output_file=video_output)
+            saved = None
+
+        video_abs = os.path.abspath(video_output)
+        if saved:
+            saved_abs = os.path.abspath(saved)
+            self._video_to_traj[video_abs] = saved_abs
+            self._traj_metadata[saved_abs] = {
+                "iter": int(iter_idx),
+                "role": role,
+                "result_idx": result_idx,
+                "feature_idx": feature_idx,
+                "feature_components": feature_components,
+                "candidate_reward_function": candidate_source,
+                "video_at_record_time": video_abs,
+                "checkpoint": checkpoint,
+            }
+        else:
+            # Drop any stale mapping pointing at this video path.
+            self._video_to_traj.pop(video_abs, None)
+        return saved
+
+    def _rename_video(self, src: str, dst: str) -> None:
+        """Rename a video file and remap its trajectory mapping in lockstep.
+
+        Mirrors the existing ``os.rename(src, dst)`` behaviour but also moves the
+        ``video_path -> trajectory_path`` entry so subsequent ``_log_human_preference``
+        lookups by video path continue to find the right trajectory ``.pt``.
+        """
+        src_abs = os.path.abspath(src)
+        dst_abs = os.path.abspath(dst)
+        if os.path.exists(src):
+            os.rename(src, dst)
+        if src_abs in self._video_to_traj:
+            traj_path = self._video_to_traj.pop(src_abs)
+            self._video_to_traj[dst_abs] = traj_path
+            meta = self._traj_metadata.get(traj_path)
+            if meta is not None:
+                meta["role"] = os.path.splitext(os.path.basename(dst))[0]
+
+    def _log_human_preference(
+        self,
+        *,
+        iter_idx: int,
+        context: str,
+        video_paths: list,
+        winner_index: int,
+        reward_infos=None,
+    ) -> None:
+        """Append one record to ``<log_dir>/human_preferences.jsonl``.
+
+        Encodes one entry of υ_h(D_h) (Bobu et al. §4.1): an unordered pair of
+        trajectories together with the human's strict preference. Pairs where
+        either trajectory is missing (e.g. the side was a "NONE" placeholder) are
+        skipped — they cannot be used for σ_TAC because we need both Ĝ_r values.
+        """
+        if video_paths is None or len(video_paths) != 2:
+            return
+        v_a, v_b = video_paths[0], video_paths[1]
+        if not isinstance(v_a, str) or not isinstance(v_b, str):
+            return
+        if v_a == "NONE" or v_b == "NONE":
+            return
+
+        traj_a = self._video_to_traj.get(os.path.abspath(v_a))
+        traj_b = self._video_to_traj.get(os.path.abspath(v_b))
+
+        meta_a = self._traj_metadata.get(traj_a, {}) if traj_a else {}
+        meta_b = self._traj_metadata.get(traj_b, {}) if traj_b else {}
+
+        label_a = label_b = None
+        if reward_infos is not None and len(reward_infos) >= 2:
+            label_a = getattr(reward_infos[0], "name", None)
+            label_b = getattr(reward_infos[1], "name", None)
+
+        record = {
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "iter": int(iter_idx),
+            "context": context,
+            "winner_index": int(winner_index),
+            "video_a": os.path.abspath(v_a),
+            "video_b": os.path.abspath(v_b),
+            "trajectory_a": traj_a,
+            "trajectory_b": traj_b,
+            "label_a": label_a,
+            "label_b": label_b,
+            "iter_role_a": meta_a.get("role"),
+            "iter_role_b": meta_b.get("role"),
+            "feature_components_a": meta_a.get("feature_components"),
+            "feature_components_b": meta_b.get("feature_components"),
+            "candidate_reward_function_a": meta_a.get("candidate_reward_function"),
+            "candidate_reward_function_b": meta_b.get("candidate_reward_function"),
+        }
+        if traj_a is None or traj_b is None:
+            record["warning"] = "missing_trajectory_skip_in_tac"
+
+        try:
+            with open(self._human_pref_jsonl_path, "a") as f:
+                f.write(json.dumps(record, default=str) + "\n")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARN] Failed to append to {self._human_pref_jsonl_path}: {exc}")
+

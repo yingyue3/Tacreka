@@ -21,6 +21,37 @@ from PIL import Image, ImageDraw
 
 from isaaclab_eureka.utils import get_freest_gpu
 
+# State fields snapshot by ``_capture_state``. Mirrors the schema used by
+# ``scripts/record_offline_trajectories.py`` so saved trajectories can be replayed
+# by ``scripts/eval_reward_on_offline_dataset.py`` and the human-preference TAC
+# script without any per-task adapter code.
+_ROBOT_DATA_FIELDS = (
+    "root_pos_w",
+    "root_quat_w",
+    "root_lin_vel_w",
+    "root_lin_vel_b",
+    "root_ang_vel_w",
+    "root_ang_vel_b",
+    "projected_gravity_b",
+)
+_ENV_FIELDS = ("_desired_pos_w",)
+
+
+def _capture_state(base_env) -> dict:
+    """Snapshot the tensors most reward functions need. Robust to missing fields."""
+    out: dict = {}
+    robot_data = getattr(getattr(base_env, "_robot", None), "data", None)
+    if robot_data is not None:
+        for name in _ROBOT_DATA_FIELDS:
+            tensor = getattr(robot_data, name, None)
+            if tensor is not None and hasattr(tensor, "detach"):
+                out[name] = tensor.detach().clone().cpu()
+    for name in _ENV_FIELDS:
+        tensor = getattr(base_env, name, None)
+        if tensor is not None and hasattr(tensor, "detach"):
+            out[name] = tensor.detach().clone().cpu()
+    return out
+
 # import gymnasium as gym
 # import isaaclab_tasks  # noqa: F401
 # from isaaclab.envs import DirectRLEnvCfg
@@ -46,6 +77,8 @@ class RecordManagerQuad:
         trail_length: int = 160,
         frame_width: int = 1280,
         frame_height: int = 720,
+        save_trajectory: bool = True,
+        trajectory_gamma: float = 1.0,
     ):
         """Initialize the quadcopter recording manager.
 
@@ -64,6 +97,13 @@ class RecordManagerQuad:
             trail_length: How many recent positions to draw as trajectory.
             frame_width: Video frame width in pixels.
             frame_height: Video frame height in pixels.
+            save_trajectory: If True, also save the per-step trajectory used to
+                generate the video as a ``.pt`` file alongside the MP4. The schema
+                matches ``record_offline_trajectories.py`` so that the saved file is
+                directly consumable by ``eval_reward_on_offline_dataset.py``.
+            trajectory_gamma: Discount factor for the per-episode return summaries
+                stored in the trajectory file. Per-step rewards are saved verbatim
+                so any other gamma can be applied later.
         """
         self.task = task
         # self.checkpoint = checkpoint
@@ -79,6 +119,8 @@ class RecordManagerQuad:
         self.trail_length = trail_length
         self.frame_width = frame_width
         self.frame_height = frame_height
+        self.save_trajectory = bool(save_trajectory)
+        self.trajectory_gamma = float(trajectory_gamma)
 
         self._frame_idx = 0
         self._episode_idx = 0
@@ -88,6 +130,25 @@ class RecordManagerQuad:
         self._trail_xz: list[tuple[float, float]] = []
         self._fallback_state = {"pseudo_pos": np.zeros(3, dtype=float)}
         self._step_dt = 0.01
+
+        # Trajectory recording buffers, populated by ``_traj_*`` helpers during
+        # ``record()`` when ``self.save_trajectory`` is True. Schema mirrors
+        # ``scripts/record_offline_trajectories.py`` exactly so the saved ``.pt`` files
+        # can be consumed by ``scripts/eval_reward_on_offline_dataset.py`` (and the
+        # human-preference TAC script) with no special-casing.
+        self._traj_step_obs: list = []
+        self._traj_step_action: list = []
+        self._traj_step_oracle: list = []
+        self._traj_step_done: list = []
+        self._traj_step_episode_id: list = []
+        self._traj_step_state: dict[str, list] = {}
+        self._traj_episode_id = None  # torch.LongTensor[num_envs], lazily initialized
+        self._traj_episode_oracle_returns: list[float] = []
+        self._traj_oracle_return_buf = None
+        self._traj_discount_buf = None
+        self._traj_active: bool = False
+        self._traj_n_episodes_completed: int = 0
+        self._traj_checkpoint_path: str | None = None
 
         import torch
 
@@ -359,8 +420,16 @@ class RecordManagerQuad:
             return True
         return False
 
-    def record(self, output_file: str, checkpoint: str):
-        """Run policy rollout and record video."""
+    def record(self, output_file: str, checkpoint: str, trajectory_output_file: str | None = None):
+        """Run policy rollout and record video.
+
+        Args:
+            output_file: Path to the output MP4 video file.
+            checkpoint: Path to the policy checkpoint to load.
+            trajectory_output_file: Optional path for the saved trajectory ``.pt`` file.
+                If ``self.save_trajectory`` is True and this is None, defaults to
+                ``<output_file>.pt`` (so ``foo.mp4`` -> ``foo.pt``).
+        """
         import torch
 
         import gymnasium as gym
@@ -385,11 +454,20 @@ class RecordManagerQuad:
         self._trail_xz = []
         self._fallback_state = {"pseudo_pos": np.zeros(3, dtype=float)}
 
+        if self.save_trajectory and trajectory_output_file is None:
+            # Default sibling next to the MP4: foo.mp4 -> foo.pt
+            base, _ = os.path.splitext(output_file)
+            trajectory_output_file = base + ".pt"
+        self._traj_reset(self.env.unwrapped, checkpoint_path=checkpoint)
+
         print(f"[INFO] Device: {self.device}")
         print(f"[INFO] Task: {self.task}")
         print(f"[INFO] Output video: {output_file}")
         print(f"[INFO] Num envs: {self.env_cfg.scene.num_envs}")
+        if self.save_trajectory:
+            print(f"[INFO] Output trajectory: {trajectory_output_file}")
 
+        saved_traj_path: str | None = None
         try:
             if self.rl_library == "rsl_rl":
                 self._record_rsl_rl(self.env, self.device, self.simulation_app, writer, active_env_idx, load_cfg_from_registry, torch, checkpoint)
@@ -401,11 +479,145 @@ class RecordManagerQuad:
             writer.close()
             print(f"[INFO] Fallback recording complete. Frames: {self._frame_idx}")
             print(f"[INFO] Saved video: {output_file}")
+            if self.save_trajectory and trajectory_output_file is not None:
+                try:
+                    saved_traj_path = self._traj_save(trajectory_output_file)
+                    if saved_traj_path:
+                        print(
+                            f"[INFO] Saved trajectory: {saved_traj_path} "
+                            f"({self._traj_n_episodes_completed} eps, "
+                            f"{len(self._traj_step_action)} env-steps)"
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[WARN] Failed to save trajectory file {trajectory_output_file!r}: {exc}")
+        return saved_traj_path
 
     def close(self):
         """Close the environment and simulation app."""
         self.env.close()
         self.simulation_app.close()
+
+    def _traj_reset(self, base_env, checkpoint_path: str | None) -> None:
+        """Clear trajectory buffers at the start of a new ``record()`` call."""
+        if not self.save_trajectory:
+            self._traj_active = False
+            return
+
+        import torch  # local import: torch may not be importable until AppLauncher ran
+
+        n_envs = int(getattr(base_env, "num_envs", self.num_envs) or 1)
+        self._traj_step_obs = []
+        self._traj_step_action = []
+        self._traj_step_oracle = []
+        self._traj_step_done = []
+        self._traj_step_episode_id = []
+        self._traj_step_state = {}
+        self._traj_episode_id = torch.zeros(n_envs, dtype=torch.long)
+        self._traj_episode_oracle_returns = []
+        self._traj_oracle_return_buf = torch.zeros(n_envs, dtype=torch.float32)
+        self._traj_discount_buf = torch.ones(n_envs, dtype=torch.float32)
+        self._traj_n_episodes_completed = 0
+        self._traj_checkpoint_path = checkpoint_path
+        self._traj_active = True
+
+    def _traj_record_step(
+        self,
+        base_env,
+        obs_tensor,
+        actions,
+        rewards,
+        done_mask,
+    ) -> None:
+        """Append one env-step to the trajectory buffers.
+
+        ``rewards`` is the per-env oracle-reward tensor returned by ``env.step``;
+        we discount it with ``self.trajectory_gamma`` for the per-episode return
+        summary, but the saved per-step tensor is verbatim so any other gamma can
+        be applied later by the offline-replay tooling.
+        """
+        if not (self.save_trajectory and self._traj_active):
+            return
+
+        import torch
+
+        if obs_tensor.ndim == 1:
+            obs_tensor = obs_tensor.unsqueeze(0)
+        if actions.ndim == 1:
+            actions = actions.unsqueeze(0)
+        rewards_cpu = rewards.detach().to(torch.float32).cpu().reshape(-1)
+        done_cpu = done_mask.detach().bool().cpu().reshape(-1)
+
+        # Allow the buffer to lazily resize if e.g. num_envs disagrees with init.
+        n_envs = rewards_cpu.shape[0]
+        if self._traj_oracle_return_buf is None or self._traj_oracle_return_buf.shape[0] != n_envs:
+            self._traj_oracle_return_buf = torch.zeros(n_envs, dtype=torch.float32)
+            self._traj_discount_buf = torch.ones(n_envs, dtype=torch.float32)
+            self._traj_episode_id = torch.zeros(n_envs, dtype=torch.long)
+
+        self._traj_step_obs.append(obs_tensor.detach().cpu().clone())
+        self._traj_step_action.append(actions.detach().cpu().clone())
+        self._traj_step_oracle.append(rewards_cpu)
+        self._traj_step_done.append(done_cpu)
+        self._traj_step_episode_id.append(self._traj_episode_id.clone())
+
+        for name, tensor in _capture_state(base_env).items():
+            self._traj_step_state.setdefault(name, []).append(tensor)
+
+        self._traj_oracle_return_buf += self._traj_discount_buf * rewards_cpu
+        self._traj_discount_buf = self._traj_discount_buf * self.trajectory_gamma
+
+        if done_cpu.any():
+            done_idx = torch.nonzero(done_cpu, as_tuple=False).flatten().tolist()
+            for i in done_idx:
+                self._traj_episode_oracle_returns.append(
+                    float(self._traj_oracle_return_buf[i].item())
+                )
+                self._traj_n_episodes_completed += 1
+            self._traj_oracle_return_buf[done_cpu] = 0.0
+            self._traj_discount_buf[done_cpu] = 1.0
+            self._traj_episode_id[done_cpu] += 1
+
+    def _traj_save(self, output_path: str) -> str | None:
+        """Stack buffers and write a ``.pt`` file in the offline-replay schema.
+
+        Returns the absolute path written, or ``None`` if no steps were recorded
+        (e.g. ``save_trajectory=False`` or the loop exited before the first step).
+        """
+        if not (self.save_trajectory and self._traj_active and self._traj_step_action):
+            self._traj_active = False
+            return None
+
+        import torch
+
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        traj: dict = {
+            "obs": torch.stack(self._traj_step_obs, dim=0),
+            "action": torch.stack(self._traj_step_action, dim=0),
+            "oracle_reward": torch.stack(self._traj_step_oracle, dim=0),
+            # No candidate reward installed in the recorder env (only the policy is
+            # loaded, not the LLM reward). The offline replay tooling synthesises
+            # the candidate reward from `state` + `action`. We still emit a zero
+            # tensor of the right shape so downstream schema checks pass.
+            "candidate_reward": torch.zeros_like(torch.stack(self._traj_step_oracle, dim=0)),
+            "done": torch.stack(self._traj_step_done, dim=0),
+            "episode_id": torch.stack(self._traj_step_episode_id, dim=0),
+            "episode_oracle_returns": torch.tensor(self._traj_episode_oracle_returns),
+            "episode_candidate_returns": torch.zeros(
+                len(self._traj_episode_oracle_returns), dtype=torch.float32
+            ),
+            "n_episodes_completed": int(self._traj_n_episodes_completed),
+            "n_env_steps": int(len(self._traj_step_action)),
+            "gamma": float(self.trajectory_gamma),
+            "task": self.task,
+            "checkpoint_path": self._traj_checkpoint_path,
+        }
+        if self._traj_step_state:
+            traj["state"] = {
+                name: torch.stack(seq, dim=0) for name, seq in self._traj_step_state.items()
+            }
+        torch.save(traj, output_path)
+        self._traj_active = False
+        return os.path.abspath(output_path)
 
     def _record_rsl_rl(self, env, device, simulation_app, writer, active_env_idx, load_cfg_from_registry, torch, checkpoint):
         """Record using RSL-RL library."""
@@ -444,6 +656,14 @@ class RecordManagerQuad:
             self._yaw_est += float(ang_vel_b[2]) * self._step_dt
 
             self._update_trails(pos_w)
+
+            self._traj_record_step(
+                base_env=env.unwrapped,
+                obs_tensor=policy_obs,
+                actions=actions,
+                rewards=rewards,
+                done_mask=dones,
+            )
 
             frame = self._render_frame(
                 pos_w=pos_w,
@@ -534,6 +754,14 @@ class RecordManagerQuad:
             self._yaw_est += float(ang_vel_b[2]) * self._step_dt
 
             self._update_trails(pos_w)
+
+            self._traj_record_step(
+                base_env=env.unwrapped,
+                obs_tensor=policy_obs,
+                actions=actions,
+                rewards=rewards,
+                done_mask=dones,
+            )
 
             frame = self._render_frame(
                 pos_w=pos_w,

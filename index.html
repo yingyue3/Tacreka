@@ -398,105 +398,105 @@
                 
             <div class="feature-card">
                 <div class="feature-header">
-                    <span class="feature-name">position_error</span>
-                    <span class="feature-weight">weight: 6.0</span>
-                    <span class="feature-direction" style="color: #f87171;">
-                        ↓ minimize
-                    </span>
-                </div>
-                <div class="feature-intent">
-                    <strong>Intent:</strong> This feature encourages the agent to minimize the distance from its current position to the target position for successful navigation.
-                </div>
-                <div class="feature-details">
-                    <div class="detail-row">
-                        <span class="detail-label">Signals:</span>
-                        <code>desired_pos_b</code>
-                    </div>
-                    <div class="detail-row">
-                        <span class="detail-label">Metric:</span>
-                        <code>torch.norm(desired_pos_b)</code>
-                    </div>
-                </div>
-                <div class="feature-failure">
-                    <strong>Failure mode:</strong> The agent may prioritize reaching the target over smooth flying if only this feature is rewarded.
-                </div>
-            </div>
-            
-            <div class="feature-card">
-                <div class="feature-header">
-                    <span class="feature-name">velocity_smoothness</span>
-                    <span class="feature-weight">weight: 3.0</span>
+                    <span class="feature-name">success_reward</span>
+                    <span class="feature-weight">weight: 0.5</span>
                     <span class="feature-direction" style="color: #4ade80;">
                         ↑ maximize
                     </span>
                 </div>
                 <div class="feature-intent">
-                    <strong>Intent:</strong> This feature encourages the agent to keep variations in its linear velocity minimal, allowing for a smoother flight experience.
+                    <strong>Intent:</strong> Encourage the quadcopter to reach the target position successfully.
                 </div>
                 <div class="feature-details">
                     <div class="detail-row">
                         <span class="detail-label">Signals:</span>
-                        <code>root_lin_vel_b</code>
+                        <code>self._robot.data.root_pos_w, self._desired_pos_w</code>
                     </div>
                     <div class="detail-row">
                         <span class="detail-label">Metric:</span>
-                        <code>-torch.mean(torch.abs(root_lin_vel_b - torch.roll(root_lin_vel_b, 1)) )</code>
+                        <code>-torch.norm(self._robot.data.root_pos_w - self._desired_pos_w)</code>
                     </div>
                 </div>
                 <div class="feature-failure">
-                    <strong>Failure mode:</strong> The agent could try to maintain a constant speed rather than adapting to necessary acceleration or deceleration.
+                    <strong>Failure mode:</strong> An agent might hover without moving towards the target, only improving this score.
                 </div>
             </div>
             
             <div class="feature-card">
                 <div class="feature-header">
-                    <span class="feature-name">control_angle</span>
-                    <span class="feature-weight">weight: 2.0</span>
-                    <span class="feature-direction" style="color: #f87171;">
-                        ↓ minimize
+                    <span class="feature-name">smooth_flight</span>
+                    <span class="feature-weight">weight: 0.3</span>
+                    <span class="feature-direction" style="color: #4ade80;">
+                        ↑ maximize
                     </span>
                 </div>
                 <div class="feature-intent">
-                    <strong>Intent:</strong> This feature promotes keeping the angular velocities low to ensure a more stable flight and control over movement.
+                    <strong>Intent:</strong> Encourage minimal abrupt changes in linear velocity to maintain smooth flight.
                 </div>
                 <div class="feature-details">
                     <div class="detail-row">
                         <span class="detail-label">Signals:</span>
-                        <code>root_ang_vel_b</code>
+                        <code>self._robot.data.root_lin_vel_b</code>
                     </div>
                     <div class="detail-row">
                         <span class="detail-label">Metric:</span>
-                        <code>abs(root_ang_vel_b).mean()</code>
+                        <code>-torch.norm(self._robot.data.root_lin_vel_b - self._robot.data.root_lin_vel_b.mean())</code>
                     </div>
                 </div>
                 <div class="feature-failure">
-                    <strong>Failure mode:</strong> The agent might adjust its orientation constantly without achieving stable control.
+                    <strong>Failure mode:</strong> An agent might conserve this score by maintaining constant, high linear velocity without incorporating changes in direction.
                 </div>
             </div>
             
             <div class="feature-card">
                 <div class="feature-header">
-                    <span class="feature-name">smooth_path</span>
-                    <span class="feature-weight">weight: 4.0</span>
+                    <span class="feature-name">stable_orientation</span>
+                    <span class="feature-weight">weight: 0.15</span>
                     <span class="feature-direction" style="color: #f87171;">
                         ↓ minimize
                     </span>
                 </div>
                 <div class="feature-intent">
-                    <strong>Intent:</strong> This feature encourages the agent to take a gradual path to the target with limited abrupt position changes or maneuvers for stability.
+                    <strong>Intent:</strong> Encourage controlled angular velocity to ensure stable orientation during flight.
                 </div>
                 <div class="feature-details">
                     <div class="detail-row">
                         <span class="detail-label">Signals:</span>
-                        <code>root_lin_vel_b, desired_pos_b</code>
+                        <code>self._robot.data.root_ang_vel_b</code>
                     </div>
                     <div class="detail-row">
                         <span class="detail-label">Metric:</span>
-                        <code>torch.mean(torch.abs(torch.roll(desired_pos_b, 1) - desired_pos_b) + torch.abs(root_lin_vel_b))</code>
+                        <code>-torch.norm(self._robot.data.root_ang_vel_b)</code>
                     </div>
                 </div>
                 <div class="feature-failure">
-                    <strong>Failure mode:</strong> The agent could ignore the target position if it only focused on limited path changes without considering the overall trajectory.
+                    <strong>Failure mode:</strong> An agent might attempt to keep high angular velocity oscillations to avoid penalty.
+                </div>
+            </div>
+            
+            <div class="feature-card">
+                <div class="feature-header">
+                    <span class="feature-name">gravity_adjustment</span>
+                    <span class="feature-weight">weight: 0.05</span>
+                    <span class="feature-direction" style="color: #f87171;">
+                        ↓ minimize
+                    </span>
+                </div>
+                <div class="feature-intent">
+                    <strong>Intent:</strong> Encourage appropriate adjustments to projected gravity response to maintain flight stability.
+                </div>
+                <div class="feature-details">
+                    <div class="detail-row">
+                        <span class="detail-label">Signals:</span>
+                        <code>self._robot.data.projected_gravity_b</code>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Metric:</span>
+                        <code>-torch.norm(self._robot.data.projected_gravity_b[:, 2])</code>
+                    </div>
+                </div>
+                <div class="feature-failure">
+                    <strong>Failure mode:</strong> An agent might ignore gravity response in favor of other components, failing to adjust appropriately based on environmental conditions.
                 </div>
             </div>
             
@@ -525,105 +525,105 @@
                 
             <div class="feature-card">
                 <div class="feature-header">
-                    <span class="feature-name">position_error</span>
-                    <span class="feature-weight">weight: 6.0</span>
-                    <span class="feature-direction" style="color: #f87171;">
-                        ↓ minimize
-                    </span>
-                </div>
-                <div class="feature-intent">
-                    <strong>Intent:</strong> Encourage the agent to minimize the Euclidean distance from its current position to the desired target position to achieve effective navigation.
-                </div>
-                <div class="feature-details">
-                    <div class="detail-row">
-                        <span class="detail-label">Signals:</span>
-                        <code>desired_pos_b</code>
-                    </div>
-                    <div class="detail-row">
-                        <span class="detail-label">Metric:</span>
-                        <code>torch.norm(desired_pos_b)</code>
-                    </div>
-                </div>
-                <div class="feature-failure">
-                    <strong>Failure mode:</strong> The agent might rush to the target without considering smooth flight dynamics.
-                </div>
-            </div>
-            
-            <div class="feature-card">
-                <div class="feature-header">
-                    <span class="feature-name">velocity_control</span>
-                    <span class="feature-weight">weight: 3.0</span>
+                    <span class="feature-name">target_proximity</span>
+                    <span class="feature-weight">weight: 0.5</span>
                     <span class="feature-direction" style="color: #4ade80;">
                         ↑ maximize
                     </span>
                 </div>
                 <div class="feature-intent">
-                    <strong>Intent:</strong> Encourage the agent to maintain a steady linear velocity to ensure smooth transitions during flight.
+                    <strong>Intent:</strong> Encourage the quadcopter to get closer to the target position.
                 </div>
                 <div class="feature-details">
                     <div class="detail-row">
                         <span class="detail-label">Signals:</span>
-                        <code>root_lin_vel_b</code>
+                        <code>self._robot.data.root_pos_w, self._desired_pos_w</code>
                     </div>
                     <div class="detail-row">
                         <span class="detail-label">Metric:</span>
-                        <code>abs(torch.mean(root_lin_vel_b))</code>
+                        <code>torch.exp(-0.5 * torch.norm(self._robot.data.root_pos_w - self._desired_pos_w))</code>
                     </div>
                 </div>
                 <div class="feature-failure">
-                    <strong>Failure mode:</strong> The agent could keep velocity constant without responding to changes needed for smooth adjustments.
+                    <strong>Failure mode:</strong> An agent might oscillate around the target point without truly maintaining a position.
                 </div>
             </div>
             
             <div class="feature-card">
                 <div class="feature-header">
-                    <span class="feature-name">angular_control</span>
-                    <span class="feature-weight">weight: 2.5</span>
-                    <span class="feature-direction" style="color: #f87171;">
-                        ↓ minimize
+                    <span class="feature-name">smooth_linear_velocity</span>
+                    <span class="feature-weight">weight: 0.25</span>
+                    <span class="feature-direction" style="color: #4ade80;">
+                        ↑ maximize
                     </span>
                 </div>
                 <div class="feature-intent">
-                    <strong>Intent:</strong> Encourage minimized angular velocities to ensure the quadcopter maintains stable orientations during flight.
+                    <strong>Intent:</strong> Promote steady movement by rewarding low linear velocity fluctuations.
                 </div>
                 <div class="feature-details">
                     <div class="detail-row">
                         <span class="detail-label">Signals:</span>
-                        <code>root_ang_vel_b</code>
+                        <code>self._robot.data.root_lin_vel_b</code>
                     </div>
                     <div class="detail-row">
                         <span class="detail-label">Metric:</span>
-                        <code>abs(root_ang_vel_b).mean()</code>
+                        <code>torch.exp(-0.2 * torch.std(self._robot.data.root_lin_vel_b))</code>
                     </div>
                 </div>
                 <div class="feature-failure">
-                    <strong>Failure mode:</strong> The agent might keep a low angular velocity consistently even when sharp turns are necessary.
+                    <strong>Failure mode:</strong> An agent might move in a zigzag manner to keep its speed low while not moving towards the target.
                 </div>
             </div>
             
             <div class="feature-card">
                 <div class="feature-header">
-                    <span class="feature-name">gravity_alignment_penalty</span>
-                    <span class="feature-weight">weight: 1.5</span>
+                    <span class="feature-name">controlled_angular_motion</span>
+                    <span class="feature-weight">weight: 0.15</span>
+                    <span class="feature-direction" style="color: #4ade80;">
+                        ↑ maximize
+                    </span>
+                </div>
+                <div class="feature-intent">
+                    <strong>Intent:</strong> Encourage gradual and controlled rotation of the quadcopter.
+                </div>
+                <div class="feature-details">
+                    <div class="detail-row">
+                        <span class="detail-label">Signals:</span>
+                        <code>self._robot.data.root_ang_vel_b</code>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Metric:</span>
+                        <code>torch.exp(-0.5 * torch.mean(torch.abs(self._robot.data.root_ang_vel_b)))</code>
+                    </div>
+                </div>
+                <div class="feature-failure">
+                    <strong>Failure mode:</strong> An agent might perform rapid spins and random rotations to reduce angular velocity without control.
+                </div>
+            </div>
+            
+            <div class="feature-card">
+                <div class="feature-header">
+                    <span class="feature-name">gravity_handling</span>
+                    <span class="feature-weight">weight: 0.1</span>
                     <span class="feature-direction" style="color: #f87171;">
                         ↓ minimize
                     </span>
                 </div>
                 <div class="feature-intent">
-                    <strong>Intent:</strong> Encourage the agent to remain appropriately aligned with the direction of gravity to enhance stability during flight.
+                    <strong>Intent:</strong> Reward appropriate adjustments to flight in response to gravitational forces.
                 </div>
                 <div class="feature-details">
                     <div class="detail-row">
                         <span class="detail-label">Signals:</span>
-                        <code>projected_gravity_b</code>
+                        <code>self._robot.data.projected_gravity_b</code>
                     </div>
                     <div class="detail-row">
                         <span class="detail-label">Metric:</span>
-                        <code>abs(projected_gravity_b[:,2] + 9.81)</code>
+                        <code>torch.exp(-0.3 * torch.mean(torch.abs(self._robot.data.projected_gravity_b)))</code>
                     </div>
                 </div>
                 <div class="feature-failure">
-                    <strong>Failure mode:</strong> The agent may keep itself level without making necessary adjustments when transitioning to different heights.
+                    <strong>Failure mode:</strong> An agent might ignore gravitational inputs entirely, resulting in erratic flight.
                 </div>
             </div>
             

@@ -100,7 +100,7 @@ class RevolveFull:
         migration_prob: float = 0.3,
         few_shot: Optional[Dict[str, int]] = None,
         temperature_final: float = 1.0,
-        use_human_feedback: bool = True,
+        use_human_feedback: bool = False,
         human_feedback_dir: Optional[str] = None,
         hf_interactive: bool = True,
         hf_port: int = 8889,

@@ -133,6 +133,95 @@ def compute_tac_from_arrays(
     }
 
 
+def compute_tac_from_pairs(
+    human_signs: Sequence[float],
+    candidate_diffs: Sequence[float],
+    indifference_eps: float = 0.0,
+) -> dict:
+    """Compute σ_TAC from a *partial* preference dataset, exactly as in Bobu et al. §4.1.
+
+    This is the direct counter for the case where the human supplies pairs (rather than
+    a full ranking). For each pair k, you supply
+
+        human_signs[k]      : +1 if η_a ≻_h η_b, −1 if ≺_h, 0 if ∼_h
+        candidate_diffs[k]  : Ĝ_r(η_a) − Ĝ_r(η_b)  (a real number; sign defines D_{r,γ})
+
+    The candidate side is converted to a sign with an optional indifference band
+    ``|Ĝ_r(η_a) − Ĝ_r(η_b)| ≤ indifference_eps`` ⇒ ∼_(r,γ).
+
+    Per Eq. (4.1):
+
+        σ_TAC = (P − Q) / sqrt((P + Q + X0)(P + Q + Y0))
+
+    where P (concordant), Q (discordant), X0 (tied only in D_{r,γ}), Y0 (tied only in
+    D_h) are *counted directly over the supplied pairs* — pairs tied in BOTH are
+    excluded from X0 and Y0 by the paper's definition, and contribute to neither P
+    nor Q.
+
+    Args:
+        human_signs: Per-pair human preference sign in {−1, 0, +1} (or anything whose
+            ``np.sign`` lands there).
+        candidate_diffs: Per-pair candidate return *difference* Ĝ(η_a) − Ĝ(η_b).
+        indifference_eps: Half-width of the tie band on the candidate side. Default 0.
+
+    Returns:
+        Dict with ``tac_score_kendall_tau_b``, ``P``, ``Q``, ``X0``, ``Y0``,
+        ``n_pairs_total``, ``n_pairs_used``, and ``indifference_eps``.
+    """
+    h = np.sign(np.asarray(human_signs, dtype=np.float64).ravel()).astype(int)
+    diffs = np.asarray(candidate_diffs, dtype=np.float64).ravel()
+    n_pairs_total = int(min(len(h), len(diffs)))
+    h, diffs = h[:n_pairs_total], diffs[:n_pairs_total]
+
+    valid = np.isfinite(diffs) & np.isfinite(h)
+    h, diffs = h[valid], diffs[valid]
+
+    eps = float(max(0.0, indifference_eps))
+    r = np.where(np.abs(diffs) <= eps, 0, np.sign(diffs)).astype(int)
+
+    nan_result = {
+        "tac_score_kendall_tau_b": float("nan"),
+        "P": 0,
+        "Q": 0,
+        "X0": 0,
+        "Y0": 0,
+        "n_pairs_total": n_pairs_total,
+        "n_pairs_used": int(len(h)),
+        "indifference_eps": eps,
+    }
+    if len(h) == 0:
+        return nan_result
+
+    h_nz = h != 0
+    r_nz = r != 0
+
+    # Concordant: same non-zero sign on both sides.
+    P = int(np.sum(h_nz & r_nz & (h == r)))
+    # Discordant: opposite non-zero signs.
+    Q = int(np.sum(h_nz & r_nz & (h == -r)))
+    # Tied only in candidate: r == 0, h != 0.
+    X0 = int(np.sum(~r_nz & h_nz))
+    # Tied only in human: h == 0, r != 0.
+    Y0 = int(np.sum(~h_nz & r_nz))
+
+    denom_sq = (P + Q + X0) * (P + Q + Y0)
+    if denom_sq <= 0:
+        nan_result.update({"P": P, "Q": Q, "X0": X0, "Y0": Y0})
+        return nan_result
+
+    tau_b = (P - Q) / float(np.sqrt(denom_sq))
+    return {
+        "tac_score_kendall_tau_b": float(tau_b),
+        "P": P,
+        "Q": Q,
+        "X0": X0,
+        "Y0": Y0,
+        "n_pairs_total": n_pairs_total,
+        "n_pairs_used": int(len(h)),
+        "indifference_eps": eps,
+    }
+
+
 def _find_tag(data: Mapping[str, list], target_tag: str):
     """Return the first scalar series whose tag *ends with* ``target_tag``.
 

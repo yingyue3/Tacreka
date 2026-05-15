@@ -110,7 +110,6 @@ FEATURE_GEN_PROMPT = """
 Decompose the following RL task into a small set of interpretable "features" that capture what humans would consider good performance. These features will later be turned into reward terms and combined as a weighted sum.
 Task context:
 - Task description is: {task_description}
-- The desired task score is: {success_metric_to_win}
 - Here is how we get the observations from the environment: {get_observations_method_as_string}
 """
 
@@ -182,7 +181,6 @@ Goal: Write reward functions for an IsaacLab task by turning a given set of huma
 
 FEATURE_AS_ONE_REWARD_PROMPT = """
 Write a reward function for the following task: {task_description}
-The desired task score is: {success_metric_to_win}
 Here is how we get the observations from the environment: {get_observations_method_as_string}
 
 Features to implement (generated previously):
@@ -255,15 +253,10 @@ refined feature set exactly:
 - Assign fresh named weights for the refined components based on the provided weights in the FEATURES_JSON.
 - If a useful code pattern from the previous reward conflicts with the refined features, discard that
   pattern and follow the refined features.
-
-Before writing the final code, internally check that increasing the total reward should improve the desired
-task score rather than merely increasing motion, survival time, or another proxy.
-
-The refined features to implement are:
-{FEATURES_JSON}
 """ + FEATURE_AS_ONE_REWARD_FORMATTING_PROMPT
 
 HUMAN_RANKING_FEATURE_REFINEMENT_PROMPT = """
+Analyze each reward component one by one based on the policy feedback and provide a new, improved reward component decomposition that can better solve the task. Some helpful tips for analyzing each the reward components based on the policy feedback:
 Please carefully analyze the policy feedback and provide a new reward feature decomposition that sets the training results as close as possible to the desired task score.
 A human observer watched the trained robot policy and ranked the reward features from MOST important to LEAST important based on how much each feature contributes to meaningful, desirable behavior.
 
@@ -299,12 +292,18 @@ RULE 4 — ACT on human feedback.
   environment's observation method and produce a meaningful proxy metric.
 
 RULE 5 — VALIDATE signal quality.
-  For any retained or newly added feature, verify:
-  (a) Its measurable_signals exist in the environment observation method.
-  (b) Its proxy_metric produces a signal that varies meaningfully between good and bad agent states.
-  (c) It does NOT use torch.norm(projected_gravity_b) as an uprightness proxy (use projected_gravity_b[:, 2] instead).
-  If a retained feature fails validation, fix the proxy_metric or replace the feature with a corrected one.
-""" + FEATURE_GEN_FORMATTING_PROMPT
+  Some helpful tips for analyzing the policy feedback and validate the signal quality:
+    (1) If the success rates are always near zero, then you must rewrite the whole reward feature decomposition component.
+    (2) If the values for a certain reward component are near identical throughout (min ≈ max, range < 0.05). You MUST: 
+        (a) Identify the root cause. Is it because the signal is near-constant? Is it because the signal is not correlated with the task success?
+        (b) Rethink the signal that is being used to implement the reward component. Change the signal or the way it is being used (e.g., projected_gravity_b[:, 2] for tilt/uprightness).
+    (3) If some reward components' magnitude is significantly larger, then you must re-scale to a proper weight.
+    (4) If the total reward magnitude grew more than 5x during training (e.g., from ~1 to ~40), the components
+        are not properly bounded. Apply torch.tanh or torch.clamp to keep each component in [-1, 1] or [0, 1].
+    (5) If the task_score improves initially but then degrades (reward-objective misalignment), strengthen
+        the primary_success component weight and/or remove auxiliary terms that pull in a conflicting direction.
+    (6) Do NOT reference attributes that are not explicitly provided in the environment's observation method.
+    """ + FEATURE_GEN_FORMATTING_PROMPT
 
 DECOMPOSE_REWARD_PROMPT = """
 You are a reward engineer for reinforcement learning.

@@ -77,7 +77,7 @@ class Tacreka_SR:
             wandb_entity: The wandb entity/team name.
             wandb_name: The wandb run name. If None, uses timestamp.
         """
-        self.multi_gpus = True
+        self.multi_gpus = False
 
         # Load the task description and success metric
         if task in TASKS_CFG:
@@ -248,7 +248,14 @@ class Tacreka_SR:
                         FEATURES_JSON=feature_string,
                     )
                 elif feature_gen_prompt != "N" and rw_gen_assistant_prompt is not None:
-                    rw_gen_user_prompt_iter = rw_gen_user_prompt + FEATURE_AS_ONE_NEW_FEATURES_FEEDBACK_PROMPT.format(FEATURES_JSON=feature_string)
+                    # rw_gen_user_prompt_iter = rw_gen_user_prompt + FEATURE_AS_ONE_SUCCESS_POST_FEEDBACK_PROMPT.format(FEATURES_JSON=feature_string)
+                    rw_gen_user_prompt_iter = FEATURE_AS_ONE_NEW_FEATURES_FEEDBACK_PROMPT.format(FEATURES_JSON=feature_string)
+                    # rw_gen_user_prompt_iter = FEATURE_AS_ONE_REWARD_PROMPT.format(
+                    #     task_description=self._task_description,
+                    #     success_metric_to_win=self._success_metric_to_win,
+                    #     get_observations_method_as_string=self._task_manager.get_observations_method_as_string,
+                    #     FEATURES_JSON=feature_string,
+                    # )
                 else:
                     rw_gen_user_prompt_iter = rw_gen_user_prompt
                 reward_code = self._llm_manager.single_feature_prompt(user_prompt=rw_gen_user_prompt_iter, assistant_prompt=rw_gen_assistant_prompt, 
@@ -382,6 +389,10 @@ class Tacreka_SR:
             # ):
             #     print(f"Task solved with success metric: {best_run_results['success_metric']}")
             #     break
+
+            if user_feedback_prompt == "N":
+                iter -= 1
+                continue
 
             assistant_prompt = best_run_results["assistant_prompt"]
             feature_gen_prompt = best_run_results["user_prompt"]
