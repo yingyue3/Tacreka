@@ -129,6 +129,11 @@ class FakeEnv:
     def __init__(self, num_envs: int):
         self._robot = _FakeRobot()
         self.num_envs = int(num_envs)
+        # Trajectories are replayed on CPU (see ``torch.load(..., map_location="cpu")``
+        # below). Some LLM-generated reward bodies finish with
+        # ``return total_reward.to(self.device), ...`` — expose a matching device
+        # so those calls succeed offline.
+        self.device = torch.device("cpu")
 
     def set_step_state(self, state_step: dict[str, torch.Tensor]) -> None:
         for name, tensor in state_step.items():

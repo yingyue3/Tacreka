@@ -277,13 +277,13 @@ class Tacreka_Preference:
                     )
                 elif feature_gen_prompt != "N" and rw_gen_assistant_prompt is not None:
                     # rw_gen_user_prompt_iter = FEATURE_AS_ONE_NEW_FEATURES_FEEDBACK_PROMPT.format(FEATURES_JSON=feature_string)
-                    # rw_gen_user_prompt_iter = rw_gen_user_prompt + FEATURE_AS_ONE_SUCCESS_POST_FEEDBACK_PROMPT.format(FEATURES_JSON=feature_string)
-                    rw_gen_user_prompt_iter = FEATURE_AS_ONE_REWARD_PROMPT.format(
-                        task_description=self._task_description,
-                        success_metric_to_win=self._success_metric_to_win,
-                        get_observations_method_as_string=self._task_manager.get_observations_method_as_string,
-                        FEATURES_JSON=feature_string,
-                    ) + FEATURE_AS_ONE_NEW_FEATURES_FEEDBACK_PROMPT
+                    rw_gen_user_prompt_iter = rw_gen_user_prompt + FEATURE_AS_ONE_SUCCESS_POST_FEEDBACK_PROMPT.format(FEATURES_JSON=feature_string)
+                    # rw_gen_user_prompt_iter = FEATURE_AS_ONE_REWARD_PROMPT.format(
+                    #     task_description=self._task_description,
+                    #     success_metric_to_win=self._success_metric_to_win,
+                    #     get_observations_method_as_string=self._task_manager.get_observations_method_as_string,
+                    #     FEATURES_JSON=feature_string,
+                    # ) + FEATURE_AS_ONE_NEW_FEATURES_FEEDBACK_PROMPT
                 else:
                     rw_gen_user_prompt_iter = rw_gen_user_prompt
                 reward_code = self._llm_manager.single_feature_prompt(user_prompt=rw_gen_user_prompt_iter, assistant_prompt=rw_gen_assistant_prompt, 
