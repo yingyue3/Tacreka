@@ -568,10 +568,16 @@ class Tacreka_Preference:
                         best_run_results["learning_curve"] = results[best_reward_components]["learning_curve"]
                         self._rename_video("./ratings/run_2.mp4", "./ratings/best_run.mp4")
             
-            assistant_prompt = best_run_results["assistant_prompt"]
-            feature_gen_prompt = best_run_results["user_prompt"]
-            rw_gen_assistant_prompt = best_run_results["assistant_prompt_rw_gen"]
-            rw_gen_user_prompt = best_run_results["user_prompt_rw_gen"]
+            # assistant_prompt = best_run_results["assistant_prompt"]
+            # feature_gen_prompt = best_run_results["user_prompt"]
+            # rw_gen_assistant_prompt = best_run_results["assistant_prompt_rw_gen"]
+            # rw_gen_user_prompt = best_run_results["user_prompt_rw_gen"]
+
+            assistant_prompt = results[best_run_idx]["assistant_prompt"]
+            user_prompt = results[best_run_idx]["user_prompt"]
+            rw_gen_assistant_prompt = results[best_run_idx]["assistant_prompt_rw_gen"]
+            rw_gen_user_prompt = results[best_run_idx]["user_prompt_rw_gen"]
+
         
         self._log_final_results(best_run_results)
         # Close the task manager

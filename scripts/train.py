@@ -106,7 +106,7 @@ def main(args_cli):
         )
         revolve_full.run()
     else:
-        eureka = EurekaHuman(
+        eureka = Eureka(
             task=args_cli.task,
             rl_library=args_cli.rl_library,
             num_parallel_runs=args_cli.num_parallel_runs,

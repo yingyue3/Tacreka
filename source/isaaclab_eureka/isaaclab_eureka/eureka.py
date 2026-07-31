@@ -91,7 +91,7 @@ class Eureka:
         )
 
         print("[INFO]: Setting up the Task Manager...")
-        if task == "Isaac-Lift-Cube-Franka-v0":
+        if task == "Isaac-Lift-Cube-Franka-v0" or task == "Isaac-Reach-Franka-v0":
             self._task_manager = ManipulationTaskManager(
                 task=task,
                 device=device,
@@ -100,7 +100,7 @@ class Eureka:
                 # num_processes=self._num_processes,
                 num_processes=1,
                 max_training_iterations=max_training_iterations,
-                # success_metric_string=success_metric_string,
+                success_metric_string=success_metric_string,
                 log_namespace="tacreka_sr",
                 rl_log_root_dir=self._rl_runs_dir,
             )

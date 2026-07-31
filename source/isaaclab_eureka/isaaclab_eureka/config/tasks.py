@@ -19,6 +19,24 @@ TASKS_CFG = {
         "success_metric_to_win": 0.0,
         "success_metric_tolerance": 0.2,
     },
+    "Isaac-Reach-Franka-v0": {
+        "description": (
+            "Move the end-effector to a sampled target pose with the Franka robot"
+        ),
+        "success_metric": (
+            "torch.linalg.norm("
+            "combine_frame_transforms("
+            "self.scene['robot'].data.root_pos_w[env_ids],"
+            " self.scene['robot'].data.root_quat_w[env_ids],"
+            " self.command_manager.get_command('ee_pose')[env_ids, :3]"
+            ")[0]"
+            " - self.scene['robot'].data.body_pos_w["
+            "env_ids, self.scene['robot'].body_names.index('panda_hand')"
+            "], dim=1).mean()"
+        ),
+        "success_metric_to_win": 0.0,
+        "success_metric_tolerance": 0.05,
+    },
     "Isaac-Lift-Cube-Franka-v0": {
         "description": (
             "Control a 7-DOF Franka Panda arm with a binary gripper to lift a cube off a table and "
@@ -37,19 +55,16 @@ TASKS_CFG = {
             "self.scene['robot'].data.root_pos_w (robot base world pos, identity rotation), "
             "self.scene['ee_frame'].data.target_pos_w[..., 0, :] (end-effector world pos)."
         ),
-        # Mean L2 distance from the cube to the commanded goal position at episode end.
-        # Uses combine_frame_transforms for correctness under any base orientation.
-        # Lower is better; a perfect agent drives this to 0.
+        # Episode-end mean distance (m) from cube to commanded goal. Lower is
+        # better. Robot base uses identity rotation, so the world-frame goal is
+        # just base position + commanded (base-frame) offset.
         "success_metric": (
-            "combine_frame_transforms("
-            "self.scene['robot'].data.root_pos_w[env_ids],"
-            " self.scene['robot'].data.root_quat_w[env_ids],"
-            " self.command_manager.get_command('object_pose')[env_ids, :3])[0]"
-            ".sub(self.scene['object'].data.root_pos_w[env_ids, :3])"
-            ".norm(dim=1).mean()"
+            "torch.linalg.norm("
+            "(self.scene['robot'].data.root_pos_w[env_ids]"
+            " + self.command_manager.get_command('object_pose')[env_ids, :3])"
+            " - self.scene['object'].data.root_pos_w[env_ids, :3], dim=1).mean()"
         ),
         "success_metric_to_win": 0.0,
-        # A well-trained agent achieves ~2–5 cm mean object-to-goal distance; accept ≤5 cm as solved.
         "success_metric_tolerance": 0.05,
     },
     "Isaac-Humanoid-Direct-v0": {

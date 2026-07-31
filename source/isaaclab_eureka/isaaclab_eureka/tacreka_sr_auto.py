@@ -115,7 +115,7 @@ class Tacreka_SR:
         )
 
         print("[INFO]: Setting up the Task Manager...")
-        if task == "Isaac-Lift-Cube-Franka-v0":
+        if task == "Isaac-Lift-Cube-Franka-v0" or task == "Isaac-Reach-Franka-v0":
             self._task_manager = ManipulationTaskManager(
                 task=task,
                 device=device,

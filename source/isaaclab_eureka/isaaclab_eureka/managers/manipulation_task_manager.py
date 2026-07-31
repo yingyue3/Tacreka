@@ -29,6 +29,7 @@ import multiprocessing
 import os
 import traceback
 import types
+from collections.abc import Mapping
 from contextlib import nullcontext
 from datetime import datetime
 from typing import Literal
@@ -81,9 +82,10 @@ def _compute_with_eureka(self_rm, dt):
 #   2. Call _reset_idx_original (which resets managers, buffers, etc.).
 #   3. Merge per-episode Eureka averages into self.extras["log"] and zero sums.
 #
-# {success_metric} is replaced with the full assignment statement
+# {success_metrics} is replaced with assignment statements such as
 #   extras['Eureka/success_metric'] = <expression>
-# or left empty if no success metric is configured.
+#   extras['Eureka/object_to_goal_distance'] = <expression>
+# or left empty if no success metrics are configured.
 # ---------------------------------------------------------------------------
 TEMPLATE_RESET_STRING = """
 import torch
@@ -94,9 +96,18 @@ def _reset_idx(self, env_ids):
     if env_ids is None or len(env_ids) == self.num_envs:
         env_ids = torch.arange(self.num_envs, device=self.device)
     extras = dict()
+    def _eureka_metric_to_scalar(value):
+        if not torch.is_tensor(value):
+            return torch.tensor(float(value), device=self.device)
+        value = value.detach()
+        if not torch.is_floating_point(value):
+            value = value.float()
+        if value.numel() == 1:
+            return value.reshape(())
+        return value.mean()
     # Evaluate success metric before the original reset so scene buffers reflect
     # the episode-end state (they will be overwritten by _reset_idx_original).
-    {success_metric}
+    {success_metrics}
     self._reset_idx_original(env_ids)
     if "log" not in self.extras:
         self.extras["log"] = dict()
@@ -113,16 +124,56 @@ def _reset_idx(self, env_ids):
 # ---------------------------------------------------------------------------
 _LLM_REWARD_IMPORT_PREFIX = (
     "import torch\n"
+    "from isaaclab.managers import SceneEntityCfg\n"
+    "from isaaclab.envs.mdp.rewards import action_rate_l2, joint_vel_l2\n"
     "from isaaclab.utils.math import (\n"
     "    combine_frame_transforms,\n"
     "    subtract_frame_transforms,\n"
     "    quat_rotate,\n"
     "    quat_rotate_inverse,\n"
+    "    quat_error_magnitude,\n"
+    ")\n"
+    "from isaaclab_tasks.manager_based.manipulation.reach.mdp.rewards import (\n"
+    "    position_command_error,\n"
+    "    position_command_error_tanh,\n"
+    "    orientation_command_error,\n"
     ")\n"
     "from isaaclab.assets import RigidObject\n"
     "from isaaclab.sensors import FrameTransformer\n"
     "\n"
 )
+
+
+def _build_success_metric_assignments(
+    success_metric_string: str | Mapping[str, str] | None,
+    success_metric_strings: Mapping[str, str] | None,
+) -> str:
+    """Build reset-time logging statements for scalar success diagnostics."""
+    metrics: dict[str, str] = {}
+    if isinstance(success_metric_string, Mapping):
+        metrics.update(success_metric_string)
+    elif success_metric_string:
+        metrics["success_metric"] = success_metric_string
+
+    if success_metric_strings:
+        metrics.update(success_metric_strings)
+
+    assignments: list[str] = []
+    for metric_name, expression in metrics.items():
+        if not expression:
+            continue
+        log_key = f"Eureka/{metric_name}"
+        assignments.append(
+            "try:\n"
+            f"        extras[{log_key!r}] = _eureka_metric_to_scalar({expression})\n"
+            "    except Exception as metric_error:\n"
+            f"        print(f\"[ManipulationTaskManager] Failed to evaluate success metric {metric_name!r}: "
+            "{metric_error}\")"
+        )
+
+    if not assignments:
+        return ""
+    return "\n    ".join(assignments)
 
 
 class ManipulationTaskManager:
@@ -174,7 +225,8 @@ class ManipulationTaskManager:
         device: str = "cuda",
         env_seed: int = 42,
         max_training_iterations: int = 100,
-        success_metric_string: str = "",
+        success_metric_string: str | Mapping[str, str] = "",
+        success_metric_strings: Mapping[str, str] | None = None,
         log_namespace: str = "manipulation_eureka",
         rl_log_root_dir: str | None = None,
     ):
@@ -190,7 +242,12 @@ class ManipulationTaskManager:
             success_metric_string: Python expression (as a string) evaluated
                 inside the patched ``_reset_idx`` that computes a scalar
                 success signal.  Must be valid in a context where ``self`` is
-                the env and ``env_ids`` is a 1-D int tensor.
+                the env and ``env_ids`` is a 1-D int tensor.  A mapping can be
+                passed to log multiple metrics.
+            success_metric_strings: Optional named metric expressions to log in
+                addition to ``success_metric_string``.  If omitted, task-level
+                diagnostics from ``TASKS_CFG[task]["success_metrics"]`` are
+                used when present.
             log_namespace: Sub-folder name under ``logs/rl_runs/rsl_rl_<ns>/``.
             rl_log_root_dir: Override the entire log root directory.
         """
@@ -199,17 +256,22 @@ class ManipulationTaskManager:
         self._num_processes = num_processes
         self._device = device
         self._max_training_iterations = max_training_iterations
-        self._success_metric_string = success_metric_string
         self._env_seed = env_seed
         self._rl_log_root_dir = os.path.abspath(rl_log_root_dir) if rl_log_root_dir else None
         sanitized = str(log_namespace).strip().replace(" ", "_")
         self._log_namespace = sanitized if sanitized else "manipulation_eureka"
 
-        # Wrap success_metric string into a full assignment statement.
-        if self._success_metric_string:
-            self._success_metric_string = (
-                "extras['Eureka/success_metric'] = " + self._success_metric_string
-            )
+        if success_metric_strings is None:
+            try:
+                from isaaclab_eureka.config.tasks import TASKS_CFG
+
+                success_metric_strings = TASKS_CFG.get(task, {}).get("success_metrics")
+            except Exception:
+                success_metric_strings = None
+        self._success_metric_assignments = _build_success_metric_assignments(
+            success_metric_string,
+            success_metric_strings,
+        )
 
         self._processes: dict[int, multiprocessing.Process] = {}
         # Per-worker queue: main → worker (reward function strings)
@@ -408,9 +470,13 @@ class ManipulationTaskManager:
         rew_cfg = getattr(env.cfg, "rewards", None)
         if rew_cfg is not None and dataclasses.is_dataclass(rew_cfg):
             lines.append("# === Oracle reward terms (for reference — shows task structure) ===")
-            lines.append("# IMPORTANT: object_goal_distance only activates when the cube is")
-            lines.append("# ABOVE minimal_height. Your reward MUST include a lifting stage.")
-            lines.append("")
+            if self._task == "Isaac-Lift-Cube-Franka-v0":
+                lines.append("# IMPORTANT: object_goal_distance only activates when the cube is")
+                lines.append("# ABOVE minimal_height. Your reward MUST include a lifting stage.")
+                lines.append("# NOTE: in the default Lift config, minimal_height is an absolute")
+                lines.append("# world-z threshold of 0.04 m, while the cube starts near z=0.055 m.")
+                lines.append("# Treat a real lift as cube z > 0.10 m or z - 0.055 m > 0.045 m.")
+                lines.append("")
             for term_field in dataclasses.fields(rew_cfg):
                 term = getattr(rew_cfg, term_field.name, None)
                 if term is None or not hasattr(term, "func"):
@@ -427,41 +493,66 @@ class ManipulationTaskManager:
         lines += [
             "# --- Key scene entity access patterns (use in reward function) ---",
             "#",
-            "# Object (cube) state:",
-            "#   self.scene['object'].data.root_pos_w          (num_envs, 3)   world pos",
-            "#   self.scene['object'].data.root_lin_vel_w       (num_envs, 3)   world linear vel",
-            "#   self.scene['object'].data.root_ang_vel_w       (num_envs, 3)   world angular vel",
-            "#   self.scene['object'].data.root_quat_w          (num_envs, 4)   world orientation [w,x,y,z]",
-            "#",
             "# Robot state:",
-            "#   self.scene['robot'].data.root_pos_w            (num_envs, 3)   robot base world pos",
-            "#   self.scene['robot'].data.root_quat_w           (num_envs, 4)   robot base world orientation",
-            "#   self.scene['robot'].data.joint_pos             (num_envs, J)   joint positions",
-            "#   self.scene['robot'].data.joint_vel             (num_envs, J)   joint velocities",
-            "#   self.scene['robot'].data.joint_pos_target      (num_envs, J)   commanded joint targets",
+            "#   robot = self.scene['robot']",
+            "#   robot.data.root_pos_w            (num_envs, 3)   robot base world pos",
+            "#   robot.data.root_quat_w           (num_envs, 4)   robot base world orientation [w,x,y,z]",
+            "#   robot.data.joint_pos             (num_envs, J)   joint positions",
+            "#   robot.data.joint_vel             (num_envs, J)   joint velocities",
+            "#   robot.data.joint_pos_target      (num_envs, J)   commanded joint targets",
             "#",
-            "# End-effector frame (Franka panda_hand + 0.1034 m offset):",
-            "#   self.scene['ee_frame'].data.target_pos_w[..., 0, :]   (num_envs, 3)  EE world pos",
-            "#   self.scene['ee_frame'].data.target_quat_w[..., 0, :]  (num_envs, 4)  EE world orientation",
-            "#",
-            "# Goal command ('object_pose' — resampled every 5 s / full episode):",
-            "#   self.command_manager.get_command('object_pose')[:, :3]",
-            "#       (num_envs, 3) desired cube position in robot-base frame",
-            "#   Goal in world frame (Franka base has identity rotation):",
-            "#       goal_world = self.scene['robot'].data.root_pos_w + cmd[:, :3]",
-            "#",
+        ]
+        if self._task == "Isaac-Reach-Franka-v0":
+            lines += [
+                "# Reach task specifics:",
+                "#   Use command name 'ee_pose'. Do NOT use 'object_pose'; this task has no object command.",
+                "#   This Reach scene has no self.scene['ee_frame']; use the robot body named 'panda_hand'.",
+                "#   cmd = self.command_manager.get_command('ee_pose')",
+                "#   cmd[:, :3]    (num_envs, 3) target position in robot-base frame",
+                "#   cmd[:, 3:7]   (num_envs, 4) target orientation in robot-base frame [w,x,y,z]",
+                "#   hand_id = robot.body_names.index('panda_hand')",
+                "#   ee_pos_w = robot.data.body_pos_w[:, hand_id]",
+                "#   ee_quat_w = robot.data.body_quat_w[:, hand_id]",
+                "#   target_pos_w, target_quat_w = combine_frame_transforms(",
+                "#       robot.data.root_pos_w, robot.data.root_quat_w, cmd[:, :3], cmd[:, 3:7]",
+                "#   )",
+                "#   position_error = torch.linalg.norm(ee_pos_w - target_pos_w, dim=1)",
+                "#",
+            ]
+        else:
+            lines += [
+                "# Object (cube) state:",
+                "#   self.scene['object'].data.root_pos_w          (num_envs, 3)   world pos",
+                "#   self.scene['object'].data.root_lin_vel_w       (num_envs, 3)   world linear vel",
+                "#   self.scene['object'].data.root_ang_vel_w       (num_envs, 3)   world angular vel",
+                "#   self.scene['object'].data.root_quat_w          (num_envs, 4)   world orientation [w,x,y,z]",
+                "#",
+                "# End-effector frame (Franka panda_hand + 0.1034 m offset):",
+                "#   self.scene['ee_frame'].data.target_pos_w[..., 0, :]   (num_envs, 3)  EE world pos",
+                "#   self.scene['ee_frame'].data.target_quat_w[..., 0, :]  (num_envs, 4)  EE world orientation",
+                "#",
+                "# Goal command ('object_pose' - resampled every 5 s / full episode):",
+                "#   self.command_manager.get_command('object_pose')[:, :3]",
+                "#       (num_envs, 3) desired cube position in robot-base frame",
+                "#   Goal in world frame (Franka base has identity rotation):",
+                "#       goal_world = self.scene['robot'].data.root_pos_w + cmd[:, :3]",
+                "#",
+            ]
+        lines += [
             "# Episode / env metadata:",
             "#   self.episode_length_buf   (num_envs,)  current step within episode",
             "#   self.max_episode_length   int          max steps per episode",
             "#   self.num_envs             int          number of parallel envs",
             "#   self.device               str          e.g. 'cuda:0'",
             "#",
-            "# Math utilities (already imported in reward function namespace):",
+            "# Math and MDP utilities (already imported in reward function namespace):",
             "#   torch.linalg.norm(v, dim=1)                        per-env L2 norm",
             "#   torch.tanh(x), torch.where(cond, a, b)             elementwise ops",
             "#   combine_frame_transforms(t_ab, q_ab, t_bc, q_bc)  compose SE3",
             "#   subtract_frame_transforms(t_ab, q_ab, t_ac)       express c in b",
             "#   quat_rotate(q, v), quat_rotate_inverse(q, v)      rotate vectors",
+            "#   quat_error_magnitude(q1, q2)                      orientation error",
+            "#   action_rate_l2(self), joint_vel_l2(self)          smoothness penalties",
         ]
         return "\n".join(lines)
 
@@ -494,8 +585,9 @@ class ManipulationTaskManager:
 
             # --- 2. Patch _reset_idx ---
             env._reset_idx_original = env._reset_idx
-            reset_string = TEMPLATE_RESET_STRING.format(
-                success_metric=self._success_metric_string
+            reset_string = TEMPLATE_RESET_STRING.replace(
+                "{success_metrics}",
+                self._success_metric_assignments,
             )
             if self._rl_library == "rl_games":
                 reset_string = reset_string.replace("@torch.inference_mode()", "")
