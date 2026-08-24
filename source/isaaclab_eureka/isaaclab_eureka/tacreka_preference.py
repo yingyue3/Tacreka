@@ -236,7 +236,7 @@ class Tacreka_Preference:
         # Initial prompts
         feature_gen_prompt = FEATURE_GEN_PROMPT.format(
             task_description=self._task_description,
-            # success_metric_to_win=self._success_metric_to_win,
+            success_metric_to_win=self._success_metric_to_win,
             get_observations_method_as_string=self._task_manager.get_observations_method_as_string,
         )
         # The assistant prompt is used to feed the previous LLM output back into the LLM

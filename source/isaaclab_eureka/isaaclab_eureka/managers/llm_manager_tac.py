@@ -236,21 +236,20 @@ class LLMManagerTac:
         Raises:
             Exception: If there is an error with the LLM API
         """
-        # self._single_feature_reward_generation_prompts = self._prompts.copy()
+        # Each request already contains the previous reward and its feedback.
+        # Keeping earlier candidate requests here duplicates that large context and
+        # previously caused this list to grow beyond the model's context window.
+        messages = [{"role": "system", "content": self._reward_system_prompt}]
         if assistant_prompt is not None:
-            self._single_feature_reward_generation_prompts .append({"role": "assistant", "content": assistant_prompt})
-        self._single_feature_reward_generation_prompts.append({"role": "user", "content": user_prompt})
-
-        # The official Eureka code only keeps the last round of feedback
-        if len(self._single_feature_reward_generation_prompts) == 6:
-            self._single_feature_reward_generation_prompts.pop(2)
-            # self._single_feature_reward_generation_prompts.pop(2)
+            messages.append({"role": "assistant", "content": assistant_prompt})
+        messages.append({"role": "user", "content": user_prompt})
+        self._single_feature_reward_generation_prompts = messages
 
         try:
             responses = create_chat_completion(
                 self._client,
                 model=self._gpt_model,
-                messages=self._single_feature_reward_generation_prompts,
+                messages=messages,
                 temperature=self._temperature,
                 n=num_suggestion,
                 timeout_seconds=self._request_timeout_seconds,

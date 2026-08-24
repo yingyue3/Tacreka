@@ -61,6 +61,44 @@ FEATURE_GEN_FEEDBACK_PROMPT = """
 We trained a RL policy using the reward function generated from the provided reward feature decomposition and tracked the values of the individual components in the reward function as well as global policy metrics such as success rates and episode lengths after every {feedback_subsampling} epochs and the maximum, mean, minimum values encountered:
 """
 
+FEATURE_HISTORY_PROMPT = """
+Reward-feature history from all previous iterations is provided below. Features are grouped by identical
+normalized measurable_signals. Each entry reports how often the feature was generated, evaluated, and selected,
+plus the success metric achieved by every feature set containing it.
+
+Frequently chosen features:
+{FREQUENTLY_CHOSEN_FEATURES}
+
+Rarely chosen features:
+{RARELY_CHOSEN_FEATURES}
+
+Complete feature history:
+{FEATURE_HISTORY_JSON}
+
+Use this history when designing the next feature sets:
+1) Treat frequently chosen features as strong evidence, while still checking their success metrics and signal quality.
+2) Do not repeatedly propose rarely chosen features unchanged unless the policy feedback gives a concrete reason.
+3) Prefer new measurable signals or meaningful revisions when previous signals were rarely selected or had poor success.
+4) Do not select a feature solely because it was common; task feedback and closeness to the desired score remain decisive.
+"""
+
+REWARD_FUNCTION_HISTORY_PROMPT = """
+When implementing this iteration's reward function, consider the following history of features grouped by
+measurable signal. Frequently selected signals and their successful metrics are useful implementation evidence.
+Rarely selected signals should not be copied unchanged without a concrete justification from current feedback.
+The current FEATURES_JSON remains the required source of truth: implement every current feature exactly once,
+but use history to choose sound normalization, scaling, safeguards, and signal formulations.
+
+Frequently chosen features:
+{FREQUENTLY_CHOSEN_FEATURES}
+
+Rarely chosen features:
+{RARELY_CHOSEN_FEATURES}
+
+Complete feature history:
+{FEATURE_HISTORY_JSON}
+"""
+
 FEATURE_GEN_INITIAL_PROMPT = """
 You are a reward-design assistant for reinforcement learning.
 
@@ -110,6 +148,11 @@ FEATURE_GEN_PROMPT = """
 Decompose the following RL task into a small set of interpretable "features" that capture what humans would consider good performance. These features will later be turned into reward terms and combined as a weighted sum.
 Task context:
 - Task description is: {task_description}
+- Desired task score is: {success_metric_to_win}
+- If the desired task score is 0.0 and the score is an error or distance, propose features whose
+  rewards increase as the error or distance decreases.
+- Preserve all task-specific reward-design requirements from the task description. For manipulation
+  tasks, do not discard frame-conversion, staged-learning, or dense-reward requirements.
 - Here is how we get the observations from the environment: {get_observations_method_as_string}
 """
 
@@ -181,6 +224,7 @@ Goal: Write reward functions for an IsaacLab task by turning a given set of huma
 
 FEATURE_AS_ONE_REWARD_PROMPT = """
 Write a reward function for the following task: {task_description}
+The desired task score is: {success_metric_to_win}
 Here is how we get the observations from the environment: {get_observations_method_as_string}
 
 Features to implement (generated previously):
