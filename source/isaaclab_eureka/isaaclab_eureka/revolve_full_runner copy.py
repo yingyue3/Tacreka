@@ -2,12 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import csv
 import datetime
 import glob
+import itertools
 import json
+import math
 import os
 import random
 from functools import partial
+from html import escape as html_escape
 from typing import Dict, List, Optional, Tuple
 
 from isaaclab_eureka import EUREKA_ROOT_DIR
@@ -16,7 +20,7 @@ from isaaclab_eureka.config import (
     DIRECT_WORKFLOW_TASK_PROMPT,
     TASKS_CFG,
 )
-from isaaclab_eureka.managers import EurekaTaskManager, LLMManager, RecordManagerQuad
+from isaaclab_eureka.managers import EurekaTaskManager, LLMManager
 from isaaclab_eureka.managers.feedback_manager import HumanFeedbackManager, RewardInfo
 from isaaclab_eureka.learning_curve_utils import export_learning_curve_artifacts
 from isaaclab_eureka.revolve_full.database import RevolveDatabase
@@ -96,13 +100,24 @@ class RevolveFull:
         migration_prob: float = 0.3,
         few_shot: Optional[Dict[str, int]] = None,
         temperature_final: float = 1.0,
-        use_human_feedback: bool = True,
+        use_human_feedback: bool = False,
         human_feedback_dir: Optional[str] = None,
+        hf_interactive: bool = True,
+        hf_port: int = 8889,
+        hf_timeout: int = 3600,
+        hf_max_pairs: Optional[int] = None,
+        hf_include_reward_code: bool = True,
+        hf_reward_code_max_lines: int = 30,
+        hf_record_videos: bool = True,
+        hf_video_max_frames: int = 300,
+        hf_video_fps: int = 30,
+        hf_recorder_kind: Optional[str] = None,
         use_wandb: bool = True,
         wandb_project: str = "isaaclab-revolve-full",
         wandb_entity: str = None,
         wandb_name: str = None,
     ):
+        self._multi_gpus = False
         if task not in TASKS_CFG:
             raise ValueError(
                 f"Task configuration for {task} not found in the `TASKS_CFG` dictionary in config/tasks.py."
@@ -120,6 +135,22 @@ class RevolveFull:
         self._migration_prob = migration_prob
         self._use_hf = use_human_feedback
         self._hf_dir = human_feedback_dir
+        self._hf_interactive = hf_interactive and use_human_feedback
+        self._hf_port = hf_port
+        self._hf_timeout = hf_timeout
+        self._hf_max_pairs = hf_max_pairs
+        self._hf_include_reward_code = hf_include_reward_code
+        self._hf_reward_code_max_lines = hf_reward_code_max_lines
+        self._hf_record_videos = hf_record_videos and use_human_feedback
+        self._hf_video_max_frames = hf_video_max_frames
+        self._hf_video_fps = hf_video_fps
+        self._hf_recorder_kind = hf_recorder_kind
+        self._device = device
+        self._rl_library = rl_library
+        self._feedback_manager: Optional[HumanFeedbackManager] = None
+        self._record_manager = None  # Lazily instantiated; type varies by recorder kind.
+        self._record_manager_failed = False
+        self._human_pref_jsonl_path: Optional[str] = None
         self._success_metric_target = float(self._task_cfg["success_metric_to_win"])
         # Island selection assumes "higher is better". We map to a distance-based fitness.
         self._failure_fitness = -1e9
@@ -132,6 +163,19 @@ class RevolveFull:
         if self._use_hf:
             self._hf_dir = human_feedback_dir or os.path.join(self._log_dir, "human_feedback")
             os.makedirs(self._hf_dir, exist_ok=True)
+            self._human_pref_jsonl_path = os.path.join(self._hf_dir, "human_preferences.jsonl")
+            if self._hf_interactive:
+                try:
+                    self._feedback_manager = HumanFeedbackManager(
+                        port=self._hf_port, timeout=self._hf_timeout
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(
+                        f"[WARN] Failed to initialize HumanFeedbackManager ({exc}). "
+                        "Falling back to passive human-feedback mode."
+                    )
+                    self._feedback_manager = None
+                    self._hf_interactive = False
 
         self._llm_factory = partial(
             LLMManager,
@@ -140,29 +184,19 @@ class RevolveFull:
             temperature=temperature,
             system_prompt=DIRECT_WORKFLOW_INITIAL_PROMPT,
         )
+        if not self._multi_gpus:
+            self._num_processes = 1
         self._task_manager = EurekaTaskManager(
             task=task,
             device=device,
             env_seed=env_seed,
             rl_library=rl_library,
-            num_processes=1,
+            num_processes=self._num_processes,
             max_training_iterations=max_training_iterations,
             success_metric_string=self._task_cfg.get("success_metric"),
             log_namespace="revolve_full",
             rl_log_root_dir=self._rl_runs_dir,
         )
-
-        if self._use_hf:
-            print("==================================================================================================================")
-            print("[INFO]: Setting up the Record Manager since use_human_feedback is True...")
-            self._record_manager = RecordManagerQuad(
-                task=task,
-                num_envs=1,
-                device=device,
-                max_frames=900,
-                num_episodes=1,
-            )
-            self._feedback_manager = HumanFeedbackManager(port=8889)
 
         self._use_wandb = use_wandb
         self._wandb = None
@@ -232,7 +266,7 @@ class RevolveFull:
             counter_ids: List[int] = []
             metrics_dicts: List[Dict] = []
             candidate_ids: List[str] = []
-            results_by_candidate: List[Dict] = []
+            candidate_results: List[Dict] = []
 
             for counter_id in range(self._individuals_per_generation):
                 if generation_id == 0:
@@ -282,7 +316,23 @@ class RevolveFull:
                 fitness_scores.append(fitness)
                 counter_ids.append(counter_id)
                 candidate_ids.append(f"gen{generation_id}_ctr{counter_id}_isl{island_id}")
-                results_by_candidate.append(result)
+                candidate_results.append(
+                    {
+                        "generation_id": generation_id,
+                        "counter_id": counter_id,
+                        "island_id": island_id,
+                        "operator": operator,
+                        "success": result["success"],
+                        "success_metric": success_metric_value,
+                        "fitness": fitness,
+                        "rewards_correlation": correlation,
+                        "reward_string": reward_string,
+                        "training_log_dir": result.get("log_dir"),
+                        "training_run_dir": result.get("run_dir", result.get("log_dir")),
+                        "checkpoint_file": result.get("checkpoint_file")
+                        or self._resolve_checkpoint_path(result.get("run_dir", result.get("log_dir"))),
+                    }
+                )
 
                 if best_overall["fitness"] is None or (
                     success_metric_max is not None
@@ -318,13 +368,40 @@ class RevolveFull:
                 print("[WARN] No valid reward functions generated; skipping generation update.")
                 continue
 
-            # Human feedback: record videos for successful candidates, then rank via pairwise comparisons.
+            # Human feedback: write manifest, (optionally) prompt the human for pairwise
+            # preferences, then if responses exist override fitness scores with Elo ratings.
             if self._use_hf:
-                print("==================================================================================================================")
-                print("[INFO]: Collecting human fitness since use_human_feedback is True...")
-                fitness_scores = self._collect_human_fitness(
-                    generation_id, candidate_ids, fitness_scores, results_by_candidate
-                )
+                manifest_path = os.path.join(self._hf_dir, f"generation_{generation_id}", "candidates_manifest.csv")
+                os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+                with open(manifest_path, "w") as mf:
+                    mf.write("candidate_id,generation,counter,island,log_dir\n")
+                    for cid, gen_id, ctr_id, isl_id in zip(
+                        candidate_ids,
+                        [generation_id] * len(counter_ids),
+                        counter_ids,
+                        island_ids,
+                    ):
+                        mf.write(f"{cid},{gen_id},{ctr_id},{isl_id},{self._log_dir}\n")
+
+                if self._hf_interactive and self._feedback_manager is not None:
+                    try:
+                        self._collect_human_preferences(
+                            generation_id=generation_id,
+                            candidate_ids=candidate_ids,
+                            candidate_results=candidate_results,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        print(
+                            f"[WARN] Interactive human preference collection failed for "
+                            f"generation {generation_id}: {exc}. Continuing with auto-fitness."
+                        )
+
+                hf_scores = compute_hf_scores(self._hf_dir, generation_id)
+                if hf_scores:
+                    remapped_scores = []
+                    for cid, default_score in zip(candidate_ids, fitness_scores):
+                        remapped_scores.append(hf_scores.get(cid, default_score))
+                    fitness_scores = remapped_scores
 
             if generation_id > 0:
                 database.add_individuals_to_islands(
@@ -346,100 +423,368 @@ class RevolveFull:
                 )
 
         self._task_manager.close()
+        self._close_recorder()
         self._log_final_results(best_overall)
-
-    def _collect_human_fitness(
-        self,
-        generation_id: int,
-        candidate_ids: List[str],
-        fitness_scores: List[float],
-        results_by_candidate: List[Dict],
-    ) -> List[float]:
-        """Record videos for each successful candidate, run pairwise comparisons via browser UI,
-        write results as a responses CSV, then compute Elo scores."""
-        video_dir = os.path.join(self._hf_dir, f"generation_{generation_id}")
-        os.makedirs(video_dir, exist_ok=True)
-
-        # Record a video for each successful candidate; failed ones get None.
-        video_paths: List[Optional[str]] = []
-        for cid, result in zip(candidate_ids, results_by_candidate):
-            if result["success"]:
-                checkpoint = result.get("checkpoint_file") or self._resolve_checkpoint_path(
-                    result.get("run_dir", result.get("log_dir"))
-                )
-                if checkpoint:
-                    video_path = os.path.join(video_dir, f"{cid}.mp4")
-                    self._record_manager.record(checkpoint=checkpoint, output_file=video_path)
-                    video_paths.append(video_path)
-                else:
-                    video_paths.append(None)
-            else:
-                video_paths.append(None)
-
-        # Only compare candidates that have a video.
-        valid_indices = [i for i, vp in enumerate(video_paths) if vp is not None]
-        if len(valid_indices) < 2:
-            print("[HF] Fewer than 2 successful videos; skipping human comparison.")
-            return fitness_scores
-
-        # Run all pairwise comparisons through the browser UI and collect rows for the CSV.
-        csv_rows: List[Dict] = []
-        for a in range(len(valid_indices)):
-            for b in range(a + 1, len(valid_indices)):
-                idx_a = valid_indices[a]
-                idx_b = valid_indices[b]
-                label_a = candidate_ids[idx_a]
-                label_b = candidate_ids[idx_b]
-                print(f"\n[HF] Comparing {label_a} vs {label_b}")
-                feedback_result = self._feedback_manager.select_video(
-                    video_paths=[video_paths[idx_a], video_paths[idx_b]],
-                    descriptions=[label_a, label_b],
-                    task_description=self._task_cfg.get("description"),
-                    reward_infos=[RewardInfo(name=label_a), RewardInfo(name=label_b)],
-                    allow_text_feedback=False,
-                    allow_rating=False,
-                )
-                # Selected=1.0 means Video 1 won, 2.0 means Video 2 won (Elo convention).
-                selected = 1.0 if feedback_result.selected_index == 0 else 2.0
-                csv_rows.append({
-                    "Video 1": label_a,
-                    "Video 2": label_b,
-                    "Selected": selected,
-                    "Positive Feedback 1": "",
-                    "Negative Feedback 1": "",
-                    "Positive Feedback 2": "",
-                    "Negative Feedback 2": "",
-                })
-
-        # Write responses CSV so compute_hf_scores can accumulate across generations.
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        csv_path = os.path.join(video_dir, f"responses_{timestamp}.csv")
-        import csv as _csv
-        with open(csv_path, "w", newline="") as f:
-            writer = _csv.DictWriter(f, fieldnames=[
-                "Video 1", "Video 2", "Selected",
-                "Positive Feedback 1", "Negative Feedback 1",
-                "Positive Feedback 2", "Negative Feedback 2",
-            ])
-            writer.writeheader()
-            writer.writerows(csv_rows)
-        print(f"[HF] Saved {len(csv_rows)} comparisons to {csv_path}")
-
-        # Compute Elo scores (accumulates all generations up to and including this one).
-        hf_scores = compute_hf_scores(self._hf_dir, generation_id)
-        if not hf_scores:
-            return fitness_scores
-
-        new_fitness = list(fitness_scores)
-        for i, cid in enumerate(candidate_ids):
-            if cid in hf_scores:
-                new_fitness[i] = hf_scores[cid]
-        print(f"[HF] Elo scores applied: { {cid: hf_scores[cid] for cid in candidate_ids if cid in hf_scores} }")
-        return new_fitness
 
     def _to_evolution_fitness(self, success_metric: float) -> float:
         """Map task score to island fitness where larger is always better."""
         return -abs(float(success_metric) - self._success_metric_target)
+
+    def _collect_human_preferences(
+        self,
+        *,
+        generation_id: int,
+        candidate_ids: List[str],
+        candidate_results: List[Dict],
+    ) -> None:
+        """Interactively collect pairwise human preferences for this generation.
+
+        For each chosen pair of *successful* candidates, the human is shown both
+        reward functions side by side via :class:`HumanFeedbackManager` and picks
+        a winner. Results are written to:
+
+        - ``<hf_dir>/generation_<id>/responses_interactive.csv`` in the exact
+          schema :func:`compute_hf_scores` expects, with ``candidate_id`` strings
+          as the ``Video 1``/``Video 2`` keys so the downstream Elo remap aligns
+          with ``candidate_ids``.
+        - ``<hf_dir>/human_preferences.jsonl`` as an audit log.
+        """
+        eligible: List[Tuple[str, Dict]] = [
+            (cid, cres)
+            for cid, cres in zip(candidate_ids, candidate_results)
+            if cres.get("success")
+        ]
+        if len(eligible) < 2:
+            print(
+                "[HF] Skipping interactive human preferences for generation "
+                f"{generation_id}: fewer than 2 successful candidates ({len(eligible)})."
+            )
+            return
+
+        pairs = list(itertools.combinations(range(len(eligible)), 2))
+        if self._hf_max_pairs is not None and self._hf_max_pairs < len(pairs):
+            pairs = random.sample(pairs, self._hf_max_pairs)
+
+        gen_dir = os.path.join(self._hf_dir, f"generation_{generation_id}")
+        os.makedirs(gen_dir, exist_ok=True)
+
+        # Record one rollout video per eligible candidate (if enabled and recorder works).
+        # We record up-front so the same MP4 can be reused across multiple pairs the
+        # candidate participates in.
+        videos: Dict[str, str] = {cid: "NONE" for cid, _ in eligible}
+        if self._hf_record_videos:
+            self._ensure_recorder()
+            if self._record_manager is not None:
+                videos_dir = os.path.join(gen_dir, "videos")
+                os.makedirs(videos_dir, exist_ok=True)
+                for cid, cres in eligible:
+                    videos[cid] = self._record_candidate_video(
+                        candidate_id=cid,
+                        checkpoint=cres.get("checkpoint_file"),
+                        output_dir=videos_dir,
+                    )
+
+        csv_path = os.path.join(gen_dir, "responses_interactive.csv")
+        write_header = not os.path.exists(csv_path)
+        csv_columns = [
+            "Video 1",
+            "Video 2",
+            "Selected",
+            "Positive Feedback 1",
+            "Negative Feedback 1",
+            "Positive Feedback 2",
+            "Negative Feedback 2",
+        ]
+
+        with open(csv_path, "a", newline="") as fp:
+            writer = csv.DictWriter(fp, fieldnames=csv_columns)
+            if write_header:
+                writer.writeheader()
+                fp.flush()
+
+            for pair_idx, (i, j) in enumerate(pairs):
+                cid_a, res_a = eligible[i]
+                cid_b, res_b = eligible[j]
+                pair_dir = os.path.join(gen_dir, f"pair_{pair_idx:03d}")
+                os.makedirs(pair_dir, exist_ok=True)
+
+                reward_info_a = self._build_reward_info(cid_a, res_a)
+                reward_info_b = self._build_reward_info(cid_b, res_b)
+
+                video_a = videos.get(cid_a, "NONE")
+                video_b = videos.get(cid_b, "NONE")
+                # Copy/symlink the source MP4 into the pair directory so the HTTP
+                # server (which is chdir'd to ``pair_dir``) can serve it.
+                pair_video_a = self._stage_video_for_pair(video_a, pair_dir, "run_1.mp4")
+                pair_video_b = self._stage_video_for_pair(video_b, pair_dir, "run_2.mp4")
+
+                print(
+                    f"[HF] Generation {generation_id} pair "
+                    f"{pair_idx + 1}/{len(pairs)}: {cid_a} vs {cid_b}"
+                )
+                try:
+                    feedback = self._feedback_manager.select_video(
+                        video_paths=[pair_video_a, pair_video_b],
+                        descriptions=[cid_a, cid_b],
+                        task_description=(
+                            f"Task: {self._task_cfg['description']}\n"
+                            f"Target success metric: {self._success_metric_target}\n"
+                            "Watch both rollouts and pick the reward function you prefer."
+                        ),
+                        reward_infos=[reward_info_a, reward_info_b],
+                        allow_text_feedback=False,
+                        allow_rating=False,
+                        output_dir=pair_dir,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[WARN] Pair {pair_idx} feedback collection failed: {exc}. Skipping.")
+                    continue
+
+                selected = 1.0 if feedback.selected_index == 0 else 2.0
+                writer.writerow(
+                    {
+                        "Video 1": cid_a,
+                        "Video 2": cid_b,
+                        "Selected": selected,
+                        "Positive Feedback 1": "",
+                        "Negative Feedback 1": "",
+                        "Positive Feedback 2": "",
+                        "Negative Feedback 2": "",
+                    }
+                )
+                fp.flush()
+
+                self._append_preference_jsonl(
+                    generation_id=generation_id,
+                    pair_idx=pair_idx,
+                    cid_a=cid_a,
+                    cid_b=cid_b,
+                    res_a=res_a,
+                    res_b=res_b,
+                    winner_index=feedback.selected_index,
+                    text_feedback=feedback.text_feedback,
+                    video_a=video_a,
+                    video_b=video_b,
+                )
+
+    def _append_preference_jsonl(
+        self,
+        *,
+        generation_id: int,
+        pair_idx: int,
+        cid_a: str,
+        cid_b: str,
+        res_a: Dict,
+        res_b: Dict,
+        winner_index: int,
+        text_feedback: Optional[str],
+        video_a: Optional[str] = None,
+        video_b: Optional[str] = None,
+    ) -> None:
+        """Append one record of the pairwise preference to the audit JSONL."""
+        if not self._human_pref_jsonl_path:
+            return
+        record = {
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "generation": int(generation_id),
+            "pair_index": int(pair_idx),
+            "candidate_a": cid_a,
+            "candidate_b": cid_b,
+            "winner_index": int(winner_index),
+            "winner_id": cid_a if winner_index == 0 else cid_b,
+            "metrics_a": {
+                k: res_a.get(k)
+                for k in ("success", "success_metric", "fitness", "operator", "rewards_correlation")
+            },
+            "metrics_b": {
+                k: res_b.get(k)
+                for k in ("success", "success_metric", "fitness", "operator", "rewards_correlation")
+            },
+            "video_a": video_a,
+            "video_b": video_b,
+            "text_feedback": text_feedback,
+        }
+        try:
+            with open(self._human_pref_jsonl_path, "a") as f:
+                f.write(json.dumps(record, default=str) + "\n")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARN] Failed to append to {self._human_pref_jsonl_path}: {exc}")
+
+    def _build_reward_info(self, candidate_id: str, candidate_result: Dict) -> RewardInfo:
+        """Build a :class:`RewardInfo` describing a single candidate for the feedback UI."""
+
+        def _fmt(value, fmt: str = "{:.4f}") -> str:
+            if value is None:
+                return "unknown"
+            try:
+                return fmt.format(float(value))
+            except (TypeError, ValueError):
+                return str(value)
+
+        features = {
+            "operator": candidate_result.get("operator", ""),
+            "success": candidate_result.get("success"),
+            "task_score": _fmt(candidate_result.get("success_metric")),
+            "fitness": _fmt(candidate_result.get("fitness")),
+            "rewards_correlation": _fmt(candidate_result.get("rewards_correlation")),
+            "island": candidate_result.get("island_id"),
+        }
+
+        description = f"Candidate {candidate_id}"
+        if self._hf_include_reward_code:
+            reward_code = candidate_result.get("reward_string", "") or ""
+            if reward_code.strip():
+                lines = reward_code.strip().splitlines()
+                truncated = False
+                if len(lines) > self._hf_reward_code_max_lines:
+                    lines = lines[: self._hf_reward_code_max_lines]
+                    truncated = True
+                snippet = "\n".join(lines) + ("\n# ... (truncated)" if truncated else "")
+                description = (
+                    "<pre style=\"white-space: pre-wrap; background: rgba(0,0,0,0.3); "
+                    "padding: 10px; border-radius: 6px; color: #a8d8a8; max-height: 400px; "
+                    f"overflow: auto; font-family: 'Consolas','Monaco',monospace;\">{html_escape(snippet)}</pre>"
+                )
+
+        return RewardInfo(
+            name=candidate_id,
+            description=description,
+            features=features,
+        )
+
+    def _ensure_recorder(self) -> None:
+        """Lazily instantiate the video recorder for human-preference rollouts.
+
+        Picks :class:`VideoIsaac` for manipulation tasks and
+        :class:`RecordManagerQuad` for everything else, mirroring the convention
+        in ``tacreka_preference.py``. The choice can be overridden with
+        ``hf_recorder_kind`` (``"auto"`` | ``"quad"`` | ``"isaac"`` | ``"none"``).
+        """
+        if self._record_manager is not None or self._record_manager_failed:
+            return
+
+        kind = self._hf_recorder_kind
+        if not kind or kind == "auto":
+            kind = "isaac" if self._task == "Isaac-Lift-Cube-Franka-v0" else "quad"
+        if kind == "none":
+            self._record_manager_failed = True
+            return
+
+        try:
+            if kind == "isaac":
+                from isaaclab_eureka.managers import VideoIsaac
+
+                self._record_manager = VideoIsaac(
+                    task=self._task,
+                    device=self._device,
+                    num_clips=1,
+                    clip_length=self._hf_video_max_frames,
+                )
+            elif kind == "quad":
+                from isaaclab_eureka.managers import RecordManagerQuad
+
+                self._record_manager = RecordManagerQuad(
+                    task=self._task,
+                    num_envs=1,
+                    device=self._device,
+                    rl_library=self._rl_library,
+                    fps=self._hf_video_fps,
+                    max_frames=self._hf_video_max_frames,
+                    num_episodes=1,
+                    save_trajectory=False,
+                )
+            else:
+                raise ValueError(f"Unknown hf_recorder_kind={kind!r}")
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[WARN] Failed to initialize video recorder ({kind}): {exc}. "
+                "Falling back to no-video pairwise comparisons."
+            )
+            self._record_manager = None
+            self._record_manager_failed = True
+
+    def _record_candidate_video(
+        self,
+        *,
+        candidate_id: str,
+        checkpoint: Optional[str],
+        output_dir: str,
+    ) -> str:
+        """Record a single rollout video for ``candidate_id`` and return its path.
+
+        Returns ``"NONE"`` if recording is disabled, the recorder failed to
+        initialize, no checkpoint is available, or recording itself fails. That
+        sentinel is what :meth:`HumanFeedbackManager.select_video` expects in
+        place of a real video path.
+        """
+        if self._record_manager is None or not checkpoint or not os.path.exists(checkpoint):
+            return "NONE"
+
+        os.makedirs(output_dir, exist_ok=True)
+        output_file = os.path.join(output_dir, f"{candidate_id}.mp4")
+        try:
+            saved = self._record_manager.record(checkpoint=checkpoint, output_file=output_file)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARN] Failed to record video for {candidate_id}: {exc}")
+            return "NONE"
+
+        # ``RecordManagerQuad.record`` returns the trajectory path (or None);
+        # ``VideoIsaac.record`` returns a list of saved MP4 paths. Either way the
+        # MP4 we asked for should now exist at ``output_file`` (or close to it).
+        if isinstance(saved, list) and saved:
+            mp4_candidate = saved[0]
+            if os.path.exists(mp4_candidate):
+                return mp4_candidate
+        if os.path.exists(output_file):
+            return output_file
+        return "NONE"
+
+    @staticmethod
+    def _stage_video_for_pair(video_path: str, pair_dir: str, dest_name: str) -> str:
+        """Materialize ``video_path`` under ``pair_dir`` so the HTTP server can serve it.
+
+        :class:`HumanFeedbackManager.select_video` ``chdir``s into the directory
+        containing the first valid video; if both videos live elsewhere the
+        server can't serve them by basename. We symlink (or copy as fallback)
+        the source MP4 into ``pair_dir/<dest_name>`` and return that path.
+        Returns ``"NONE"`` if no real video is available.
+        """
+        if not video_path or video_path == "NONE":
+            return "NONE"
+        src_abs = os.path.abspath(video_path)
+        if not os.path.exists(src_abs):
+            return "NONE"
+        os.makedirs(pair_dir, exist_ok=True)
+        dst = os.path.join(pair_dir, dest_name)
+        if os.path.exists(dst) or os.path.islink(dst):
+            try:
+                os.remove(dst)
+            except OSError:
+                pass
+        try:
+            os.symlink(src_abs, dst)
+        except OSError:
+            # Filesystem doesn't support symlinks (e.g. some NFS mounts) — copy.
+            import shutil
+
+            try:
+                shutil.copyfile(src_abs, dst)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[WARN] Could not stage video {src_abs} -> {dst}: {exc}")
+                return "NONE"
+        return dst
+
+    def _close_recorder(self) -> None:
+        """Best-effort shutdown of the lazy video recorder."""
+        if self._record_manager is None:
+            return
+        close_fn = getattr(self._record_manager, "close", None)
+        if callable(close_fn):
+            try:
+                close_fn()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[WARN] Failed to close recorder cleanly: {exc}")
+        self._record_manager = None
 
     @staticmethod
     def _resolve_checkpoint_path(log_dir: Optional[str]) -> Optional[str]:

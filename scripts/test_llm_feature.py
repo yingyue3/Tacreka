@@ -236,20 +236,21 @@ class LLMManagerTac:
         Raises:
             Exception: If there is an error with the LLM API
         """
-        # Each request already contains the previous reward and its feedback.
-        # Keeping earlier candidate requests here duplicates that large context and
-        # previously caused this list to grow beyond the model's context window.
-        messages = [{"role": "system", "content": self._reward_system_prompt}]
+        # self._single_feature_reward_generation_prompts = self._prompts.copy()
         if assistant_prompt is not None:
-            messages.append({"role": "assistant", "content": assistant_prompt})
-        messages.append({"role": "user", "content": user_prompt})
-        self._single_feature_reward_generation_prompts = messages
+            self._single_feature_reward_generation_prompts .append({"role": "assistant", "content": assistant_prompt})
+        self._single_feature_reward_generation_prompts.append({"role": "user", "content": user_prompt})
+
+        # The official Eureka code only keeps the last round of feedback
+        if len(self._single_feature_reward_generation_prompts) == 6:
+            self._single_feature_reward_generation_prompts.pop(2)
+            # self._single_feature_reward_generation_prompts.pop(2)
 
         try:
             responses = create_chat_completion(
                 self._client,
                 model=self._gpt_model,
-                messages=messages,
+                messages=self._single_feature_reward_generation_prompts,
                 temperature=self._temperature,
                 n=num_suggestion,
                 timeout_seconds=self._request_timeout_seconds,
@@ -364,3 +365,112 @@ class LLMManagerTac:
                 refined_features.append(None)
 
         return {"refined_features": refined_features, "raw_outputs": raw_outputs}
+
+
+if __name__ == "__main__":
+    DIRECT_WORKFLOW_REWARD_FORMATTING_INSTRUCTIONS = """
+Your reward function should use useful variables from the environment as inputs.
+It must comply to the following signature exactly:
+
+def _get_rewards_eureka(self) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    ...
+    return reward, individual_rewards_dict
+
+Make sure any new tensor or variable you introduce is on the same device as self.device.
+The output of the reward function should consist of two items:
+    (1) the total reward, which has a dimension of (self.num_envs,) and is a torch.Tensor,
+    (2) a dictionary of each individual reward component.
+The code output should be formatted as a python code string: "```python ... ```" and contain only the get_rewards_eureka function.
+
+Some helpful tips for writing the reward function code:
+    (1) You may find it helpful to normalize the reward to a fixed range by applying transformations like torch.exp to the overall reward or its components
+    (2) If you choose to transform a reward component, then you must also introduce a temperature parameter inside the transformation function; this parameter must be a named variable in the reward function and it must not be an input variable. Each transformed reward component should have its own temperature variable
+    (3) Make sure the type of each input variable is correctly specified; a float input variable should not be specified as torch.Tensor
+    (4) Most importantly, the reward code's input variables must contain only attributes of the provided environment class definition (namely, variables that have prefix self.). Under no circumstance can you introduce new input variables.
+"""
+
+    FEATURE_GEN_FORMATTING_PROMPT = """
+Instructions:
+1) Propose 1 to 4 candidate features. Each feature must be:
+   - Interpretable to a non-expert human (1 sentence description).
+   - Measurable from the given observations/actions (no hidden variables).
+   - Focused on behavior/outcomes (not "learn faster" or "high return").
+   - As independent as possible (avoid duplicates like "stability" and "uprightness" unless you clearly distinguish them).
+   - Based on a signal that varies MEANINGFULLY across typical agent states — not a near-constant.
+
+2) For each feature, output the following fields:
+   - feature_name: short identifier
+   - intent: what this feature encourages (1 sentence)
+   - measurable_signals: which observation/action variables to use (explicit names from OBS_LIST / ACT_LIST)
+   - proxy_metric: a concrete scalar metric formula in plain text (e.g., “abs(pole_angle)”, “-||cart_pos||”, “exp(-k*abs(angle))”)
+   - weight: the weight of the feature in the final reward function
+   - desired_direction: maximize or minimize
+   - typical_failure_mode: how an agent could "game" this feature if it were rewarded alone
+
+Some helpful tips for selecting the measurable signals:
+(1) Normalize each component to a fixed range such as [0, 1] using transformations like torch.exp(-t * signal)
+        or torch.tanh. This prevents reward explosion as training progresses.
+(2) Choose temperature parameters carefully: for torch.exp(-t * signal), set t so that
+        t * (typical_signal_magnitude) is in the range [0.5, 3.0]. If position error is typically 1–5 m,
+        use t ≈ 0.2–1.0. Each transformed component must have its own named temperature variable.
+(3) Make sure the type of each input variable is correctly specified; a float input variable should not be
+        specified as torch.Tensor.
+(4) Most importantly, the reward code's input variables must contain only attributes of the provided
+        environment class definition (namely, variables with prefix self.). Do NOT introduce new input variables
+        or reference attributes not explicitly shown in the observation method.
+Output format: valid JSON ONLY. Do not include markdown, code fences, comments, or extra text.
+"""
+
+    FEATURE_GEN_FEEDBACK_PROMPT = """
+We trained a RL policy using the reward function generated from the provided reward feature decomposition and tracked the values of the individual components in the reward function as well as global policy metrics such as success rates and episode lengths after every {feedback_subsampling} epochs and the maximum, mean, minimum values encountered:
+"""
+
+    FEATURE_GEN_INITIAL_PROMPT = """
+You are a reward-design assistant for reinforcement learning.
+
+Goal: Decompose the following RL task into a small set of interpretable "features" that capture what humans would consider good performance. These features will later be turned into reward terms and combined as a weighted sum.
+""" + FEATURE_GEN_FORMATTING_PROMPT
+    FEATURE_GEN_PROMPT = """
+    Decompose the following RL task into a small set of interpretable "features" that capture what humans would consider good performance. These features will later be turned into reward terms and combined as a weighted sum.
+        Task context:
+            - Task description is: {task_description}
+            - Here is how we get the observations from the environment: {get_observations_method_as_string}
+            """
+    task_description = "In this task, the ego-vehicle starts on a main highway but soon approaches a road junction with incoming vehicles on the access ramp. The agent’s objective is now to maintain a high speed while making room for the vehicles so that they can safely merge in the traffic."
+    get_observations_method_as_string = """{
+    "observation": {
+        "type": "Kinematics"
+    },
+    "action": {
+        "type": "DiscreteMetaAction"
+    },
+    "collision_reward": -1,
+    "right_lane_reward": 0.1,
+    "high_speed_reward": 0.2,
+    "reward_speed_range": [20, 30],
+    "merging_speed_reward": -0.5,
+    "lane_change_reward": -0.05,
+    "simulation_frequency": 15,  # [Hz]
+    "policy_frequency": 1,  # [Hz]
+    "other_vehicles_type": "highway_env.vehicle.behavior.IDMVehicle",
+    "screen_width": 600,  # [px]
+    "screen_height": 150,  # [px]
+    "centering_position": [0.3, 0.5],
+    "scaling": 5.5,
+    "show_trajectories": False,
+    "render_agent": True,
+    "offscreen_rendering": None
+    }"""
+    feature_gen_prompt = FEATURE_GEN_PROMPT.format(
+            task_description=task_description,
+            # success_metric_to_win=self._success_metric_to_win,
+            get_observations_method_as_string=task_manager.get_observations_method_as_string,
+        )
+    self._llm_manager = LLMManagerTac(
+            gpt_model="gpt-4o-mini",
+            temperature=1,
+            system_prompt=FEATURE_AS_ONE_REWARD_INITIAL_PROMPT,
+            feature_prompt=None,
+        )
+    feature_gen_outputs = llm_manager.feature_gen(user_prompt=feature_gen_prompt, assistant_prompt=None, num_suggestion= 1)
+    print(feature_gen_outputs)

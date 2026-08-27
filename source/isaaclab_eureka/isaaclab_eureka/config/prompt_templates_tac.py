@@ -61,6 +61,44 @@ FEATURE_GEN_FEEDBACK_PROMPT = """
 We trained a RL policy using the reward function generated from the provided reward feature decomposition and tracked the values of the individual components in the reward function as well as global policy metrics such as success rates and episode lengths after every {feedback_subsampling} epochs and the maximum, mean, minimum values encountered:
 """
 
+FEATURE_HISTORY_PROMPT = """
+Reward-feature history from all previous iterations is provided below. Features are grouped by identical
+normalized measurable_signals. Each entry reports how often the feature was generated, evaluated, and selected,
+plus the success metric achieved by every feature set containing it.
+
+Frequently chosen features:
+{FREQUENTLY_CHOSEN_FEATURES}
+
+Rarely chosen features:
+{RARELY_CHOSEN_FEATURES}
+
+Complete feature history:
+{FEATURE_HISTORY_JSON}
+
+Use this history when designing the next feature sets:
+1) Treat frequently chosen features as strong evidence, while still checking their success metrics and signal quality.
+2) Do not repeatedly propose rarely chosen features unchanged unless the policy feedback gives a concrete reason.
+3) Prefer new measurable signals or meaningful revisions when previous signals were rarely selected or had poor success.
+4) Do not select a feature solely because it was common; task feedback and closeness to the desired score remain decisive.
+"""
+
+REWARD_FUNCTION_HISTORY_PROMPT = """
+When implementing this iteration's reward function, consider the following history of features grouped by
+measurable signal. Frequently selected signals and their successful metrics are useful implementation evidence.
+Rarely selected signals should not be copied unchanged without a concrete justification from current feedback.
+The current FEATURES_JSON remains the required source of truth: implement every current feature exactly once,
+but use history to choose sound normalization, scaling, safeguards, and signal formulations.
+
+Frequently chosen features:
+{FREQUENTLY_CHOSEN_FEATURES}
+
+Rarely chosen features:
+{RARELY_CHOSEN_FEATURES}
+
+Complete feature history:
+{FEATURE_HISTORY_JSON}
+"""
+
 FEATURE_GEN_INITIAL_PROMPT = """
 You are a reward-design assistant for reinforcement learning.
 
@@ -110,7 +148,11 @@ FEATURE_GEN_PROMPT = """
 Decompose the following RL task into a small set of interpretable "features" that capture what humans would consider good performance. These features will later be turned into reward terms and combined as a weighted sum.
 Task context:
 - Task description is: {task_description}
-- The desired task score is: {success_metric_to_win}
+- Desired task score is: {success_metric_to_win}
+- If the desired task score is 0.0 and the score is an error or distance, propose features whose
+  rewards increase as the error or distance decreases.
+- Preserve all task-specific reward-design requirements from the task description. For manipulation
+  tasks, do not discard frame-conversion, staged-learning, or dense-reward requirements.
 - Here is how we get the observations from the environment: {get_observations_method_as_string}
 """
 
@@ -255,15 +297,10 @@ refined feature set exactly:
 - Assign fresh named weights for the refined components based on the provided weights in the FEATURES_JSON.
 - If a useful code pattern from the previous reward conflicts with the refined features, discard that
   pattern and follow the refined features.
-
-Before writing the final code, internally check that increasing the total reward should improve the desired
-task score rather than merely increasing motion, survival time, or another proxy.
-
-The refined features to implement are:
-{FEATURES_JSON}
 """ + FEATURE_AS_ONE_REWARD_FORMATTING_PROMPT
 
 HUMAN_RANKING_FEATURE_REFINEMENT_PROMPT = """
+Analyze each reward component one by one based on the policy feedback and provide a new, improved reward component decomposition that can better solve the task. Some helpful tips for analyzing each the reward components based on the policy feedback:
 Please carefully analyze the policy feedback and provide a new reward feature decomposition that sets the training results as close as possible to the desired task score.
 A human observer watched the trained robot policy and ranked the reward features from MOST important to LEAST important based on how much each feature contributes to meaningful, desirable behavior.
 
@@ -299,12 +336,18 @@ RULE 4 — ACT on human feedback.
   environment's observation method and produce a meaningful proxy metric.
 
 RULE 5 — VALIDATE signal quality.
-  For any retained or newly added feature, verify:
-  (a) Its measurable_signals exist in the environment observation method.
-  (b) Its proxy_metric produces a signal that varies meaningfully between good and bad agent states.
-  (c) It does NOT use torch.norm(projected_gravity_b) as an uprightness proxy (use projected_gravity_b[:, 2] instead).
-  If a retained feature fails validation, fix the proxy_metric or replace the feature with a corrected one.
-""" + FEATURE_GEN_FORMATTING_PROMPT
+  Some helpful tips for analyzing the policy feedback and validate the signal quality:
+    (1) If the success rates are always near zero, then you must rewrite the whole reward feature decomposition component.
+    (2) If the values for a certain reward component are near identical throughout (min ≈ max, range < 0.05). You MUST: 
+        (a) Identify the root cause. Is it because the signal is near-constant? Is it because the signal is not correlated with the task success?
+        (b) Rethink the signal that is being used to implement the reward component. Change the signal or the way it is being used (e.g., projected_gravity_b[:, 2] for tilt/uprightness).
+    (3) If some reward components' magnitude is significantly larger, then you must re-scale to a proper weight.
+    (4) If the total reward magnitude grew more than 5x during training (e.g., from ~1 to ~40), the components
+        are not properly bounded. Apply torch.tanh or torch.clamp to keep each component in [-1, 1] or [0, 1].
+    (5) If the task_score improves initially but then degrades (reward-objective misalignment), strengthen
+        the primary_success component weight and/or remove auxiliary terms that pull in a conflicting direction.
+    (6) Do NOT reference attributes that are not explicitly provided in the environment's observation method.
+    """ + FEATURE_GEN_FORMATTING_PROMPT
 
 DECOMPOSE_REWARD_PROMPT = """
 You are a reward engineer for reinforcement learning.

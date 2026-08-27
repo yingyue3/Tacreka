@@ -7,12 +7,12 @@
 import argparse
 import os
 
-from isaaclab_eureka import Revolve, RevolveFull
+from isaaclab_eureka.revolve_full_runner_human import RevolveFull
 from isaaclab_eureka.eureka import Eureka
 from isaaclab_eureka.eureka_human import EurekaHuman
 from isaaclab_eureka.tacreka_ranking import Tacreka_Ranking
-# from isaaclab_eureka.tacreka_preference import Tacreka_Preference
-from isaaclab_eureka.tacreka_sr_auto import Tacreka_SR
+from isaaclab_eureka.tacreka_preference import Tacreka_Preference
+from isaaclab_eureka.tacreka_sr_bo import Tacreka_SR
 # from isaaclab_eureka.tacreka_sr_traj import Tacreka_SR_Traj
 
 
@@ -179,7 +179,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--revolve_individuals_per_generation",
         type=int,
-        default=6,
+        default=3,
         help="Number of individuals per generation for the REvolve full baseline.",
     )
     parser.add_argument(
@@ -215,6 +215,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--revolve_use_human_feedback",
         action="store_true",
+        default=True,
         help="Use human feedback (pairwise responses) to set fitness scores for REvolve full baseline.",
     )
     parser.add_argument(
