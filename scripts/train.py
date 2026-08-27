@@ -7,6 +7,7 @@
 import argparse
 import os
 
+from isaaclab_eureka.revolve_runner import Revolve
 from isaaclab_eureka.revolve_full_runner_human import RevolveFull
 from isaaclab_eureka.eureka import Eureka
 from isaaclab_eureka.eureka_human import EurekaHuman
