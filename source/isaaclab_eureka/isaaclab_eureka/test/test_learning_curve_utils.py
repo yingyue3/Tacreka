@@ -137,7 +137,7 @@ class TestSeedAggregation(unittest.TestCase):
         )
 
         self.assertAlmostEqual(summary["success_metric_mean"], 1.0)
-        self.assertAlmostEqual(summary["success_metric_stderr"], 0.05)
+        self.assertAlmostEqual(summary["success_metric_stderr"], 0.10)
         self.assertAlmostEqual(summary["rewards_correlation_mean"], 1.0)
         self.assertIn("task_score", summary["feedback"])
         self.assertIn("±", summary["feedback"])

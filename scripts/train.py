@@ -12,7 +12,7 @@ from isaaclab_eureka.eureka import Eureka
 from isaaclab_eureka.eureka_human import EurekaHuman
 from isaaclab_eureka.tacreka_ranking import Tacreka_Ranking
 from isaaclab_eureka.tacreka_preference import Tacreka_Preference
-from isaaclab_eureka.tacreka_sr_bo import Tacreka_SR
+from isaaclab_eureka.tacreka_sr_auto import Tacreka_SR
 # from isaaclab_eureka.tacreka_sr_traj import Tacreka_SR_Traj
 
 

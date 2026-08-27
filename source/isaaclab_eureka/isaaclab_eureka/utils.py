@@ -142,12 +142,18 @@ def summarize_tensorboard_candidate(
     if valid_seed_indices:
         best_seed_index = min(
             valid_seed_indices,
-            key=lambda index: abs(seed_summaries[index]["success_metric"] - success_metric_target),
+            key=lambda index: (
+                round(abs(seed_summaries[index]["success_metric"] - success_metric_target), 12),
+                index,
+            ),
         )
         target_value = success_metric_mean if success_metric_mean is not None else success_metric_target
         representative_seed_index = min(
             valid_seed_indices,
-            key=lambda index: abs(seed_summaries[index]["success_metric"] - target_value),
+            key=lambda index: (
+                round(abs(seed_summaries[index]["success_metric"] - target_value), 12),
+                index,
+            ),
         )
 
     feedback_lines: list[str] = []

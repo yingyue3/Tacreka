@@ -542,7 +542,6 @@ def export_learning_curve_artifacts(
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    import matplotlib.transforms as mtransforms
 
     figure_title = run_name or os.path.basename(normalized_log_dirs[0])
     figure, axis = plt.subplots(1, 1, figsize=(8, 5), constrained_layout=True)
