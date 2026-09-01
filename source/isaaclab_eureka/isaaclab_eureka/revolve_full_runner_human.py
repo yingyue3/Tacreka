@@ -10,6 +10,8 @@ import random
 from functools import partial
 from typing import Dict, List, Optional, Tuple
 
+# we import this here to avoid GLIBCXX_3.4.30 error in Isaac Sim 5.1
+from isaaclab.app import AppLauncher
 from isaaclab_eureka import EUREKA_ROOT_DIR
 from isaaclab_eureka.config import (
     DIRECT_WORKFLOW_INITIAL_PROMPT,

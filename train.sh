@@ -28,6 +28,11 @@ export WANDB_MODE=offline
 
 export ISAAC_ACCEPT_EULA=YES
 
+# Clear stale local GPU selection, but preserve the device that Slurm assigned.
+if [ -z "${SLURM_JOB_ID:-}" ]; then
+    unset CUDA_VISIBLE_DEVICES
+fi
+
 # Load API credentials from a user-local secrets file.
 SECRETS_FILE="$HOME/.config/secrets/openai.env"
 if [ -f "$SECRETS_FILE" ]; then
